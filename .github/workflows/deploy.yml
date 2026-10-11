@@ -75,7 +75,12 @@ jobs:
       - name: Deploy frontend
         run: |
           DEST=/var/www/rominalimousineservice.com
+          # --exclude .well-known: the ACME challenge directory lives in the web
+          # root and is not part of the build output. Without this, --delete
+          # removes it on every deploy, which is how Let's Encrypt HTTP-01
+          # renewals are broken on the other site sharing this box.
           sudo rsync -az --delete \
+            --exclude '.well-known' \
             client/dist/ "$DEST"/
           sudo chown -R runner:runner "$DEST"
 
