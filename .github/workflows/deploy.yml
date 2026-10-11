@@ -36,14 +36,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The self-hosted runner ships its own bundled Node 20. RLS requires >=22
-      # (see client/package.json engines), so pin it here rather than trusting
-      # the runner's toolchain.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: client/package-lock.json
+      # Deliberately NOT using actions/setup-node here. The VPS already runs
+      # Node 22 (installed system-wide), so setup-node would download a second
+      # copy on every deploy — and that download hung indefinitely here on the
+      # first run. Assert the version instead of fetching one.
+      - name: Assert Node >= 22
+        run: |
+          v=$(node -v | sed 's/^v//' | cut -d. -f1)
+          echo "node $(node -v)"
+          [ "$v" -ge 22 ] || { echo "::error::Node 22+ required, found $(node -v)"; exit 1; }
 
       - run: npm ci
         working-directory: client
@@ -86,11 +87,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: server/package-lock.json
+      - name: Assert Node >= 22
+        run: |
+          v=$(node -v | sed 's/^v//' | cut -d. -f1)
+          echo "node $(node -v)"
+          [ "$v" -ge 22 ] || { echo "::error::Node 22+ required, found $(node -v)"; exit 1; }
 
       - run: npm ci
         working-directory: server
