@@ -1,0 +1,136 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once. `npm ci` + `vite build` spikes RAM, and this is
+# a 6 GB box shared with ellicottcityairporttaxi.com — an overlapping build can
+# get either site's Node process OOM-killed.
+concurrency:
+  group: romina-deploy
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npm run lint
+        working-directory: client
+
+  deploy-frontend:
+    name: Deploy frontend to VPS
+    runs-on: self-hosted
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      # The self-hosted runner ships its own bundled Node 20. RLS requires >=22
+      # (see client/package.json engines), so pin it here rather than trusting
+      # the runner's toolchain.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - run: npm ci
+        working-directory: client
+
+      - name: Build frontend
+        working-directory: client
+        env:
+          # Same-origin: empty means the client calls /api on its own domain and
+          # nginx proxies it to the Node process. One origin = no CORS at all.
+          # VITE_* values are inlined at BUILD time — changing one needs a rebuild.
+          VITE_API_URL: ''
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+        run: npm run build
+
+      - name: Guard the delete target
+        # `rsync --delete` erases anything in DEST that is not in dist/. If DEST
+        # is ever mistyped or left empty this wipes the site. Refuse to run
+        # unless the existing root really is a previously deployed build.
+        run: |
+          DEST=/var/www/rominalimousineservice.com
+          sudo mkdir -p "$DEST"
+          if ! sudo test -f "$DEST/index.html"; then
+            echo "::warning::$DEST has no index.html — first deploy, --delete has nothing to remove"
+          fi
+          sudo test -f client/dist/index.html || { echo "build produced no index.html"; exit 1; }
+
+      - name: Deploy frontend
+        run: |
+          DEST=/var/www/rominalimousineservice.com
+          sudo rsync -az --delete \
+            client/dist/ "$DEST"/
+          sudo chown -R runner:runner "$DEST"
+
+  deploy-backend:
+    name: Deploy backend to VPS
+    runs-on: self-hosted
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+        working-directory: server
+
+      - name: Deploy backend
+        run: |
+          APP=/home/deploy/api-romina
+          sudo mkdir -p "$APP"
+          sudo rsync -az --delete \
+            --exclude 'node_modules' \
+            --exclude '.env' \
+            --exclude 'logs' \
+            server/ "$APP"/
+          sudo chown -R runner:runner "$APP"
+
+          # Delete-then-start, not `pm2 restart`. PM2 restart replays the script
+          # path recorded when the process was first created; if that file has
+          # moved or been renamed it cannot recover, fails, and leaves the API
+          # down (502 behind nginx). Starting fresh means the recorded path
+          # always matches what is on disk.
+          #
+          # `romina-api` is a distinct name from `ellicott-api`, so this cannot
+          # touch the other site on this box.
+          sudo bash -c 'cd '"$APP"' \
+            && chmod +x scripts/start.sh \
+            && mkdir -p logs \
+            && npm ci --omit=dev \
+            && pm2 delete romina-api >/dev/null 2>&1 || true; \
+            cd '"$APP"' \
+            && pm2 start scripts/start.sh --name romina-api \
+            && pm2 save'
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:5002/api/health | grep -q '"ok"'; then
+              echo "API healthy on :5002"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::romina-api never became healthy on :5002"
+          sudo pm2 logs romina-api --lines 40 --nostream || true
+          exit 1
