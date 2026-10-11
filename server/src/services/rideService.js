@@ -88,22 +88,109 @@ const estimateFare = (distanceKm, durationMin, vehicleType, overrides = {}) => {
   return Math.round(total * 100) / 100;
 };
 
+// Seating capacity per vehicle type. The server is the authority: the client
+// only ever *displays* a capacity, so a caller hitting the API directly
+// bypasses any UI clamp entirely. Without this the schema's `min: 1` is the
+// only bound and `passengerCount: 500` persists against a 4-seat sedan, which
+// is discovered at the kerb.
+const VEHICLE_CAPACITY = {
+  'executive-sedan': 4,
+  'economy-sedan': 4,
+  'economy-suv': 6,
+  'premium-suv': 6,
+  'luxury-suv': 7,
+  SUV: 6,
+  Chevrolet: 6,
+  van: 14,
+  'mini-coach': 32,
+  'school-bus': 48,
+  motorcoach: 56,
+};
+const DEFAULT_CAPACITY = 4;
+
+// Luggage scales with the vehicle, not with the party size. A sedan cannot
+// take a group's worth of bags even when it is carrying four passengers.
+const VEHICLE_BAG_CAPACITY = {
+  'executive-sedan': 3,
+  'economy-sedan': 3,
+  'economy-suv': 4,
+  'premium-suv': 4,
+  'luxury-suv': 5,
+  SUV: 4,
+  Chevrolet: 4,
+  van: 12,
+  'mini-coach': 32,
+  'school-bus': 20,
+  motorcoach: 40,
+};
+
+// Clamp rather than reject. A stale client still sends its own count, and
+// failing a legitimate booking is worse than landing it on the largest party
+// the vehicle can actually carry. Non-numeric input resolves to the maximum,
+// a negative number to zero.
+const clampToVehicleCapacity = (vehicleType, passengerCount, bags) => {
+  const maxPassengers = VEHICLE_CAPACITY[vehicleType] ?? DEFAULT_CAPACITY;
+  const maxBags = VEHICLE_BAG_CAPACITY[vehicleType] ?? 3;
+  const n = Number(passengerCount);
+  const b = Number(bags);
+  return {
+    passengerCount: Math.min(Number.isFinite(n) ? Math.max(Math.floor(n), 1) : maxPassengers, maxPassengers),
+    bags: Math.min(Number.isFinite(b) ? Math.max(Math.floor(b), 0) : 0, maxBags),
+  };
+};
+
+// Straight-line distance in metres — good enough to decide "are these the same
+// place", which only needs a threshold, not route accuracy.
+const haversineM = (a, b) => {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+};
+
+// Two stops under this are the same kerbside. Booking it produces a zero-length
+// route and a fare of nothing but the base fee, which reaches dispatch as a
+// real reservation they cannot service.
+const MIN_TRIP_M = 100;
+
+const assertDistinctStops = (pickup, dropoff) => {
+  const metres = haversineM(pickup, dropoff);
+  if (metres < MIN_TRIP_M) {
+    const err = new Error('Pickup and drop-off must be different locations');
+    err.status = 400;
+    throw err;
+  }
+};
+
 export const createRide = async (passengerId, input) => {
   const pickup = input.pickup.lat ? input.pickup : await geocode(input.pickup);
   const dropoff = input.dropoff.lat ? input.dropoff : await geocode(input.dropoff);
 
+  assertDistinctStops(pickup, dropoff);
+
+  const vehicleType = input.vehicleType || 'economy-sedan';
+  const { passengerCount, bags } = clampToVehicleCapacity(
+    vehicleType,
+    input.passengerCount,
+    input.bags,
+  );
+
   const route = await getRoute(pickup, dropoff);
   const settings = await getSettings();
-  const estimated = estimateFare(route.distanceKm, route.durationMin, input.vehicleType, settings);
+  const estimated = estimateFare(route.distanceKm, route.durationMin, vehicleType, settings);
 
   const ride = await Ride.create({
     passenger: passengerId,
     pickup,
     dropoff,
-    vehicleType: input.vehicleType || 'economy-sedan',
+    vehicleType,
     serviceType: input.serviceType || '',
-    passengerCount: input.passengerCount || 1,
-    bags: input.bags || 0,
+    passengerCount,
+    bags,
     fare: {
       estimated,
       distanceKm: route.distanceKm,
@@ -298,6 +385,10 @@ export const editRide = async (rideId, passengerId, input) => {
     dropoff = input.dropoff.lat ? input.dropoff : await geocode(input.dropoff);
   }
 
+  // Re-check on edit: moving one stop onto the other is just as unserviceable
+  // as creating it that way.
+  assertDistinctStops(pickup, dropoff);
+
   const changedRoute =
     pickup.lat !== ride.pickup.lat ||
     pickup.lng !== ride.pickup.lng ||
@@ -323,8 +414,15 @@ export const editRide = async (rideId, passengerId, input) => {
   ride.dropoff = dropoff;
   ride.vehicleType = vehicleType;
   ride.serviceType = input.serviceType ?? ride.serviceType;
-  ride.passengerCount = input.passengerCount ?? ride.passengerCount;
-  ride.bags = input.bags ?? ride.bags;
+  // Re-clamp even when the client sends no counts: switching to a smaller class
+  // can leave an existing party over capacity.
+  const clamped = clampToVehicleCapacity(
+    vehicleType,
+    input.passengerCount ?? ride.passengerCount,
+    input.bags ?? ride.bags,
+  );
+  ride.passengerCount = clamped.passengerCount;
+  ride.bags = clamped.bags;
   ride.route = route;
   // preserve currency/final when recomputing fare
   ride.fare.estimated = estimated;
