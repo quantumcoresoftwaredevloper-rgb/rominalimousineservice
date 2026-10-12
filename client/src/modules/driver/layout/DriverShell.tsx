@@ -28,6 +28,13 @@ const MORE_NAV = [
 
 export default function DriverShell() {
   const { user, logout } = useAuth();
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [dutyError, setDutyError] = useState('');
+  const navigate = useNavigate();
+  const [dark, setDark] = useState(false);
+  useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
+
   const { data: profile } = useDriverProfile() as any;
   const driver = profile?.user || user;
   const online = !!driver?.driverDetails?.isAvailable;
@@ -45,12 +52,6 @@ export default function DriverShell() {
     setDutyError('');
     toggle.mutate(!online);
   };
-  const [collapsed, setCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [dutyError, setDutyError] = useState('');
-  const navigate = useNavigate();
-  const [dark, setDark] = useState(false);
-  useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
 
   const SidebarInner = (
     <div className="flex h-full flex-col">
