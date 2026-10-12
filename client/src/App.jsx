@@ -26,6 +26,9 @@ const Fleet = lazy(() => import('./pages/marketing/Fleet.jsx'));
 const Rates = lazy(() => import('./pages/marketing/Rates.jsx'));
 const Contact = lazy(() => import('./pages/marketing/Contact.jsx'));
 const Careers = lazy(() => import('./pages/marketing/Careers.jsx'));
+const Privacy = lazy(() => import('./pages/marketing/Privacy.jsx'));
+const Terms = lazy(() => import('./pages/marketing/Terms.jsx'));
+const RefundPolicy = lazy(() => import('./pages/marketing/RefundPolicy.jsx'));
 const Reservations = lazy(() => import('./pages/passenger/Reservations.jsx'));
 const Login = lazy(() => import('./pages/Login.jsx'));
 const Register = lazy(() => import('./pages/Register.jsx'));
@@ -182,6 +185,9 @@ export default function App() {
             <Route path="/fleet" element={<Fleet />} />
             <Route path="/rates" element={<Rates />} />
             <Route path="/contact" element={<Contact />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/refund-policy" element={<RefundPolicy />} />
             <Route path="/careers" element={<Careers />} />
             <Route path="/reservations" element={<Reservations />} />
             <Route path="/login" element={<Login />} />

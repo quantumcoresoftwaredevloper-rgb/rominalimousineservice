@@ -117,6 +117,11 @@ export default function Footer() {
         </div>
       </div>
       <div className="border-t border-gold-400/25 bg-black/20 py-5 text-center text-xs text-white/60">
+        <nav aria-label="Legal" className="mb-2 flex flex-wrap justify-center gap-x-5 gap-y-1">
+          <Link to="/privacy" className="underline-offset-2 hover:text-white hover:underline">Privacy Policy</Link>
+          <Link to="/terms" className="underline-offset-2 hover:text-white hover:underline">Terms of Service</Link>
+          <Link to="/refund-policy" className="underline-offset-2 hover:text-white hover:underline">Cancellation &amp; Refunds</Link>
+        </nav>
         © {new Date().getFullYear()} {BRAND_NAME}. Secure &amp; private transport. All rights reserved. · Maryland
       </div>
     </footer>
