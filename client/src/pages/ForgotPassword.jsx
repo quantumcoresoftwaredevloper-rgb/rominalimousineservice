@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Input } from '../components/ui/Input.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
 import { forgotPassword } from '../services/authService.js';
+import { getSettings } from '../services/settingsService.js';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -11,6 +12,17 @@ export default function ForgotPassword() {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [devLink, setDevLink] = useState('');
+  // Read once from the public settings endpoint. Asking per-request would mean
+  // asking "does this email exist?" — the answer has to be identical either way.
+  const [emailWorks, setEmailWorks] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    getSettings()
+      .then(({ data }) => { if (alive) setEmailWorks(data?.emailResetEnabled !== false); })
+      .catch(() => { if (alive) setEmailWorks(true); });
+    return () => { alive = false; };
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -62,6 +74,12 @@ export default function ForgotPassword() {
         )
       }
     >
+      {!sent && !emailWorks && (
+        <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Email reset is temporarily unavailable while we fix our mail service. Please contact us and
+          we will help you directly.
+        </p>
+      )}
       {sent ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">

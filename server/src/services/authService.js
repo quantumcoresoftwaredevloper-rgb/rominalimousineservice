@@ -328,11 +328,16 @@ export const forgotPassword = async (email) => {
   await user.save();
 
   const link = `${appUrl()}/reset-password?token=${rawToken}`;
-  // Best-effort for the same reason as registration: the reset token is already
-  // stored, so a 500 here would leave a live 1-hour token nobody can retrieve.
-  // Answering identically to the "no such user" branch keeps this
-  // non-enumerable whether or not delivery worked.
-  await sendMail({
+  // Deliberately swallowed. Throwing here would make a mail failure return 503
+  // for a real address and 200 for a fake one — a worse enumeration channel
+  // than the 404 this replaced, and one that leaks whether the server's SMTP
+  // is healthy. The answer is identical either way.
+  //
+  // The operator still learns about it, twice over: the log line here, and the
+  // emailResetEnabled flag that /api/settings publishes so the client can warn
+  // everyone at once without asking whether a given address exists.
+  try {
+    await sendMail({
     to: user.email,
     subject: `Reset your password — ${BRAND}`,
     html: shell(
@@ -344,8 +349,11 @@ export const forgotPassword = async (email) => {
       link,
       'This link expires in 1 hour and can only be used once. If you did not request a reset, ignore this email and your password will stay as it is.',
     ),
-    text: `Hi ${user.name},\n\nWe received a request to reset the password on your ${BRAND} account.\n\nReset your password:\n${link}\n\nThis link expires in 1 hour and can only be used once. If you did not request a reset, ignore this email.\n\n${BRAND} · (240) 351-0826`,
-  });
+      text: `Hi ${user.name},\n\nWe received a request to reset the password on your ${BRAND} account.\n\nReset your password:\n${link}\n\nThis link expires in 1 hour and can only be used once. If you did not request a reset, ignore this email.\n\n${BRAND} · (240) 351-0826`,
+    });
+  } catch (err) {
+    console.error('[auth] password reset email not sent:', err.message);
+  }
   return { resetLink: devLink(link), delivered: true };
 };
 

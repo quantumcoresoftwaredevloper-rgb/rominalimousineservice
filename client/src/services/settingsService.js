@@ -1,6 +1,8 @@
 import api from './api.js';
 
-// Public app settings (support info, payment toggle)
+// Public app settings (support info, payment toggle, email-availability flag)
 export const getPublicSettings = () => api.get('/settings');
 
-export default { getPublicSettings };
+export const getSettings = getPublicSettings;
+
+export default { getPublicSettings, getSettings };

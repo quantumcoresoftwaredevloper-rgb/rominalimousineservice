@@ -1,4 +1,5 @@
 import AppSetting from '../models/AppSetting.js';
+import { isMailConfigured } from './mailService.js';
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
@@ -40,6 +41,10 @@ export const getPublicSettings = async () => {
     supportPhone: all.supportPhone,
     supportEmail: all.supportEmail,
     vapidPublicKey: process.env.VAPID_PUBLIC_KEY || '',
+    // Lets the client warn that email reset is unavailable WITHOUT asking
+    // whether a given address exists. The per-request answer must stay identical
+    // for real and unknown addresses, or the endpoint enumerates accounts.
+    emailResetEnabled: isMailConfigured(),
   };
 };
 
