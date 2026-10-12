@@ -145,12 +145,19 @@ export default function Dashboard() {
     }
     const next = !online;
     setToggling(true);
+    setError('');
     try {
       await setAvailability(next);
       setOnline(next);
       if (!next) setRequests([]);
-    } catch {
-      /* surface via UI */
+    } catch (err) {
+      // This used to swallow the error entirely, behind a comment claiming it
+      // surfaced via the UI. It did not: an unapproved driver got a 403 and the
+      // toggle simply did nothing, with no indication of why.
+      setError(
+        err.response?.data?.message ||
+          'Could not change your duty status. Please try again.',
+      );
     } finally {
       setToggling(false);
     }

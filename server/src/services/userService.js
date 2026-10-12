@@ -14,6 +14,12 @@ export const publicProfile = (user) => ({
   role: user.role,
   avatar: user.avatar,
   emailVerified: user.emailVerified,
+  // The driver dashboard gates its on/off-duty toggle on this. It was missing
+  // here, so the client read `undefined`, and the check
+  // `isApproved !== false` treated absent as approved — every new driver was
+  // told they were cleared, got a 403 on toggling, and saw nothing at all.
+  isApproved: user.isApproved,
+  isSuspended: user.isSuspended,
   authProvider: user.authProvider,
   driverDetails: user.driverDetails,
   createdAt: user.createdAt,
