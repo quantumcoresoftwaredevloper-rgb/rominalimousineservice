@@ -321,7 +321,9 @@ export const resendVerification = async (email) => {
 export const forgotPassword = async (email) => {
   const user = await User.findOne({ email: (email || '').toLowerCase() });
   // Same shape as the request: never reveal whether the address exists.
-  if (!user) return { resetLink: undefined, delivered: false };
+  // Identical empty body to the success path in production: JSON drops the
+  // undefined key, so both answers serialise to exactly {}.
+  if (!user) return { resetLink: undefined };
 
   const rawToken = generateToken();
   user.resetToken = { token: hashToken(rawToken), expiresAt: new Date(Date.now() + 60 * 60 * 1000) };
@@ -354,7 +356,7 @@ export const forgotPassword = async (email) => {
   } catch (err) {
     console.error('[auth] password reset email not sent:', err.message);
   }
-  return { resetLink: devLink(link), delivered: true };
+  return { resetLink: devLink(link) };
 };
 
 export const resetPassword = async ({ token, password, email }) => {

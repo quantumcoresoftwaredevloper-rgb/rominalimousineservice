@@ -35,7 +35,7 @@ export default function ForgotPassword() {
     try {
       const { data } = await forgotPassword(email);
       setSent(true);
-      setDevLink(data.resetLink || '');
+      setDevLink(data?.resetLink || '');
     } catch (err) {
       // MAIL_NOT_CONFIGURED is an operator problem, not a user error, and the
       // user must be told the truth rather than "check your inbox" for a mail
