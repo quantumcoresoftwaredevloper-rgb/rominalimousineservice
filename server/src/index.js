@@ -90,6 +90,27 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many login attempts. Please wait a few minutes." },
 });
+// forgot-password and resend-verification each mint a token and send an email.
+// The blanket auth limit (300/15min) is far too loose for an unauthenticated
+// endpoint that can be pointed at someone else's mailbox.
+const emailLinkLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_EMAIL_LINK || 5),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests. Please wait before requesting another email." },
+});
+
+// reset-password and verify-email redeem a token. These do not send mail, but a
+// tight cap still stops token-guessing probes from a rotating IP pool.
+const redeemLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_REDEEM || 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many attempts. Please try again shortly." },
+});
+
 const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: Number(process.env.RATE_LIMIT_OTP || 5),
@@ -102,6 +123,10 @@ app.use("/api", apiLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/auth/login", loginLimiter);
 app.use("/api/auth/otp/send", otpLimiter);
+app.use("/api/auth/forgot-password", emailLinkLimiter);
+app.use("/api/auth/resend-verification", emailLinkLimiter);
+app.use("/api/auth/reset-password", redeemLimiter);
+app.use("/api/auth/verify-email", redeemLimiter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 

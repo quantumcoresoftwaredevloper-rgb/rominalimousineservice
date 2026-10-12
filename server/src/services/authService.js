@@ -97,27 +97,139 @@ export const logoutAll = async (userId) => {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^[+]?[\d\s()-]{7,}$/;
 
+// bcrypt silently ignores everything past 72 bytes, so a longer password is
+// quietly weaker than it looks. Refuse rather than truncate. TextEncoder
+// rather than Buffer: it is a global, so no import and no eslint globals edit.
+export const PASSWORD_MIN = 10;
+export const PASSWORD_MAX_BYTES = 72;
+
+/**
+ * Single source of truth for password strength. Returns a message, or null.
+ *
+ * The floor was 6 characters with no other rule, which is weak enough that
+ * admin123 passes. 10 characters minimum is the pragmatic bar here — complexity
+ * rules push people toward predictable substitutions, whereas length does
+ * genuinely more. The email check blocks "alex@gmail.com" style reuse, which
+ * is guessable from public information about the account.
+ */
+export const passwordPolicyError = (password, { email, name } = {}) => {
+  if (typeof password !== 'string' || !password) return 'Password is required';
+  if (password.length < PASSWORD_MIN) {
+    return `Password must be at least ${PASSWORD_MIN} characters`;
+  }
+  if (new TextEncoder().encode(password).length > PASSWORD_MAX_BYTES) {
+    return 'Password is too long';
+  }
+  const lowered = password.toLowerCase();
+  if (email && lowered.includes(String(email).toLowerCase().split('@')[0])) {
+    return 'Password must not contain your email address';
+  }
+  if (name && lowered === String(name).toLowerCase()) {
+    return 'Password must not be your name';
+  }
+  return null;
+};
+
 const validateRegistration = ({ name, email, phone, password }) => {
   if (!name || !name.trim()) return 'Full name is required';
   if (!email || !EMAIL_RE.test(email)) return 'A valid email address is required';
-  if (!password || password.length < 6) return 'Password must be at least 6 characters';
+  const policyError = passwordPolicyError(password, { email, name });
+  if (policyError) return policyError;
   if (phone && !PHONE_RE.test(phone)) return 'Please enter a valid phone number';
   return null;
 };
+
+// Only these two vehicle classes can ever be requested by a booking, and ride
+// matching compares vehicleType exactly — so a driver registered as anything
+// else is permanently invisible to dispatch.
+const BOOKABLE_VEHICLES = ['SUV', 'Chevrolet'];
+const DEFAULT_BOOKABLE = 'SUV';
+
+/**
+ * Whitelists what a self-registering driver is allowed to set.
+ *
+ * The admin path runs driverDetails through adminUserService.sanitizeDriverDetails;
+ * the public registration path passed the caller's object straight into
+ * User.create. One unauthenticated POST could therefore set:
+ *
+ *   stats: { rating: 5, ratingCount: 9999, totalRides: 9999 }  → a self-awarded
+ *     5-star rating that every surface renders
+ *   isAvailable: true  → an unapproved driver shown as "On duty"
+ *   vehicleType: 'school-bus'  → passes the 11-value model enum, matches no ride
+ *
+ * Driver actions are gated by requireApprovedDriver, so there was no payout
+ * impact — but the displayed data was entirely caller-controlled.
+ */
+const sanitizePublicDriverDetails = (input) => {
+  const dd = input && typeof input === 'object' ? input : {};
+  const requested = String(dd.vehicleType || '').trim();
+  return {
+    vehicleType: BOOKABLE_VEHICLES.includes(requested) ? requested : DEFAULT_BOOKABLE,
+    plateNumber: String(dd.plateNumber || '').trim().slice(0, 32),
+    licenseNo: String(dd.licenseNo || '').trim().slice(0, 64),
+    vehicleName: String(dd.vehicleName || '').trim().slice(0, 64),
+    // Never from the caller. Only the driver's own toggle, gated on approval,
+    // may set this.
+    isAvailable: false,
+  };
+};
+
+export const BOOKABLE_VEHICLE_TYPES = BOOKABLE_VEHICLES;
 
 /* ---------- email helpers ---------- */
 const appUrl = () => process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
 const devLink = (link) => (process.env.NODE_ENV === 'production' ? undefined : link);
 
+const BRAND = 'Romina Limousine Service';
+
+// User-supplied names go into HTML emails. Without this, a name of
+// "<img onerror=...>" is markup in the recipient's mail client.
+const escapeHtml = (value) =>
+  String(value == null ? '' : value).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]),
+  );
+
+const shell = (heading, bodyHtml, ctaLabel, ctaUrl, footNote) => `
+  <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f8f9fa;padding:32px 16px">
+    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e5e7eb">
+      <div style="background:#0b132b;padding:24px 28px">
+        <p style="margin:0;color:#efc964;font-size:12px;letter-spacing:.14em;text-transform:uppercase">${BRAND}</p>
+        <p style="margin:6px 0 0;color:#fff;font-size:19px;font-weight:700">${heading}</p>
+      </div>
+      <div style="padding:28px;color:#0b0d0f;font-size:15px;line-height:1.6">${bodyHtml}</div>
+      <div style="padding:0 28px 28px">
+        <a href="${ctaUrl}" style="display:inline-block;background:#c9a227;color:#0b132b;font-weight:700;text-decoration:none;padding:13px 26px;border-radius:999px">${ctaLabel}</a>
+      </div>
+      <div style="padding:18px 28px;background:#f8f9fa;border-top:1px solid #e5e7eb;color:#667085;font-size:12px;line-height:1.5">
+        ${footNote}
+        <p style="margin:10px 0 0">If the button does not work, copy this link into your browser:<br>
+          <span style="color:#667085;word-break:break-all">${ctaUrl}</span></p>
+      </div>
+    </div>
+    <p style="max-width:560px;margin:16px auto 0;color:#8f8f9a;font-size:11px;text-align:center">
+      ${BRAND} · Maryland · Virginia · Washington DC · Baltimore · (240) 351-0826
+    </p>
+  </div>`;
+
 const sendVerificationEmail = async (user, rawToken) => {
   const link = `${appUrl()}/verify-email?token=${rawToken}`;
+  const isDriver = user.role === 'driver';
+  const why = isDriver
+    ? 'Confirm your address so dispatch can review your driver application. Drivers cannot go on duty until an admin approves them, and approval needs a verified email.'
+    : 'Confirm your address to finish setting up your account. You can book and track rides either way.';
+
   await sendMail({
     to: user.email,
-    subject: 'Verify your email — Romina Limousine Service',
-    html: `<p>Hi ${user.name},</p><p>Confirm your email address to finish setting up your account:</p>
-      <p><a href="${link}">Verify my email</a></p>
-      <p>This link expires in 24 hours. If you didn't create this account, you can ignore this email.</p>`,
+    subject: `Verify your email — ${BRAND}`,
+    html: shell(
+      'Confirm your email address',
+      `<p>Hi ${escapeHtml(user.name)},</p><p>${why}</p>`,
+      'Verify my email',
+      link,
+      'This link expires in 24 hours. If you did not create this account, you can safely ignore this email.',
+    ),
+    text: `Hi ${user.name},\n\n${why}\n\nVerify your email:\n${link}\n\nThis link expires in 24 hours. If you did not create this account, ignore this email.\n\n${BRAND} · (240) 351-0826`,
   });
   return devLink(link);
 };
@@ -133,7 +245,8 @@ export const register = async ({ name, email, phone, password, role, driverDetai
   // RBAC: public registration may only create passenger|driver — admin roles are seed/CRM-only
   const ALLOWED_PUBLIC_ROLES = ['passenger', 'driver'];
   const safeRole = ALLOWED_PUBLIC_ROLES.includes(role) ? role : 'passenger';
-  const safeDriverDetails = safeRole === 'driver' ? driverDetails : undefined;
+  const safeDriverDetails =
+    safeRole === 'driver' ? sanitizePublicDriverDetails(driverDetails) : undefined;
   // New drivers always start unapproved — an admin must approve before they can work.
   const user = await User.create({
     name: name.trim(),
@@ -151,14 +264,35 @@ export const register = async ({ name, email, phone, password, role, driverDetai
   user.verificationToken = { token: hashToken(rawToken), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) };
   await user.save();
 
-  const verificationLink = await sendVerificationEmail(user, rawToken);
+  // The account and its session are already committed at this point, so a mail
+  // failure must not fail the request. It used to: sendMail rejecting produced a
+  // 500, the client showed "Registration failed", the user retried and got
+  // "This email is already registered" — locked out of an account that existed
+  // with tokens already issued. Now the send is best-effort, reported honestly
+  // in the response, and the user can re-send the verification later.
+  let verificationLink;
+  let verificationEmailSent = false;
+  try {
+    verificationLink = await sendVerificationEmail(user, rawToken);
+    verificationEmailSent = true;
+  } catch (err) {
+    verificationEmailSent = false;
+    console.error('[auth] verification email not sent:', err.message);
+  }
+
   const tokens = await issueTokens(user, meta);
 
-  return { user: publicUser(user), tokens, verificationLink };
+  return { user: publicUser(user), tokens, verificationLink, verificationEmailSent };
 };
 
 /* ---------- email verification ---------- */
 export const verifyEmail = async (token) => {
+  // Guard before hashing. crypto.createHash().update(undefined) throws a
+  // TypeError that reached the client as a 500 carrying the raw Node message —
+  // an unauthenticated information-disclosure and log-spam vector.
+  if (typeof token !== 'string' || !token.trim()) {
+    throw fail('Verification link is invalid or has expired.', 400);
+  }
   const hash = hashToken(token);
   const user = await User.findOne({ 'verificationToken.token': hash });
   if (!user || !user.verificationToken || user.verificationToken.expiresAt < new Date()) {
@@ -172,8 +306,10 @@ export const verifyEmail = async (token) => {
 
 export const resendVerification = async (email) => {
   const user = await User.findOne({ email: (email || '').toLowerCase() });
-  if (!user) throw fail('No account found with that email.', 404);
-  if (user.emailVerified) throw fail('Your email is already verified.', 400);
+  // Answer identically for unknown, already-verified and real-unverified
+  // addresses. The old 404 / 400 / 200 split let an unauthenticated caller
+  // enumerate accounts and learn each one's verification state.
+  if (!user || user.emailVerified) return { verificationLink: undefined };
   const rawToken = generateToken();
   user.verificationToken = { token: hashToken(rawToken), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) };
   await user.save();
@@ -184,31 +320,49 @@ export const resendVerification = async (email) => {
 /* ---------- forgot / reset password ---------- */
 export const forgotPassword = async (email) => {
   const user = await User.findOne({ email: (email || '').toLowerCase() });
-  if (!user) throw fail('No account found with that email.', 404);
+  // Same shape as the request: never reveal whether the address exists.
+  if (!user) return { resetLink: undefined, delivered: false };
 
   const rawToken = generateToken();
   user.resetToken = { token: hashToken(rawToken), expiresAt: new Date(Date.now() + 60 * 60 * 1000) };
   await user.save();
 
   const link = `${appUrl()}/reset-password?token=${rawToken}`;
+  // Best-effort for the same reason as registration: the reset token is already
+  // stored, so a 500 here would leave a live 1-hour token nobody can retrieve.
+  // Answering identically to the "no such user" branch keeps this
+  // non-enumerable whether or not delivery worked.
   await sendMail({
     to: user.email,
-    subject: 'Reset your password — Romina Limousine Service',
-    html: `<p>Hi ${user.name},</p><p>We received a request to reset your password. Click below to choose a new one:</p>
-      <p><a href="${link}">Reset my password</a></p>
-      <p>This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`,
+    subject: `Reset your password — ${BRAND}`,
+    html: shell(
+      'Choose a new password',
+      `<p>Hi ${escapeHtml(user.name)},</p>
+       <p>We received a request to reset the password on your ${BRAND} account.</p>
+       <p>Set a new password using the button below. Once you do, you will be signed out on every device.</p>`,
+      'Reset my password',
+      link,
+      'This link expires in 1 hour and can only be used once. If you did not request a reset, ignore this email and your password will stay as it is.',
+    ),
+    text: `Hi ${user.name},\n\nWe received a request to reset the password on your ${BRAND} account.\n\nReset your password:\n${link}\n\nThis link expires in 1 hour and can only be used once. If you did not request a reset, ignore this email.\n\n${BRAND} · (240) 351-0826`,
   });
-  return { resetLink: devLink(link) };
+  return { resetLink: devLink(link), delivered: true };
 };
 
-export const resetPassword = async ({ token, password }) => {
-  if (!password || password.length < 6) throw fail('Password must be at least 6 characters', 400);
+export const resetPassword = async ({ token, password, email }) => {
+  if (typeof token !== 'string' || !token.trim()) {
+    throw fail('Reset link is invalid or has expired.', 400);
+  }
+  const policyError = passwordPolicyError(password, { email });
+  if (policyError) throw fail(policyError, 400);
+
   const hash = hashToken(token);
   const user = await User.findOne({ 'resetToken.token': hash }).select('+password');
   if (!user || !user.resetToken || user.resetToken.expiresAt < new Date()) {
     throw fail('Reset link is invalid or has expired.', 400);
   }
   user.password = password;
+  // Single-use, and an outstanding link must never survive a password change.
   user.resetToken = null;
   await user.save();
 

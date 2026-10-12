@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import User from '../models/User.js';
+import { passwordPolicyError } from './authService.js';
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
@@ -78,12 +79,13 @@ export const removeAvatar = async (userId) => {
 // session — full sign-out-everywhere is handled by the reset-password flow.
 export const changePassword = async (userId, { currentPassword, newPassword }) => {
   if (!currentPassword) throw fail('Enter your current password', 400);
-  if (!newPassword || newPassword.length < 6) {
-    throw fail('New password must be at least 6 characters', 400);
-  }
 
   const user = await User.findById(userId).select('+password');
   if (!user) throw fail('User not found', 404);
+
+  const policyError = passwordPolicyError(newPassword, { email: user.email, name: user.name });
+  if (policyError) throw fail(policyError, 400);
+
   if (!(await user.matchPassword(currentPassword))) {
     throw fail('Current password is incorrect', 400);
   }
@@ -92,6 +94,10 @@ export const changePassword = async (userId, { currentPassword, newPassword }) =
   }
 
   user.password = newPassword;
+  // Any outstanding reset link is void once the password changes, whatever route
+  // changed it. Otherwise a link requested before a change stays usable for an
+  // hour afterwards — including after an admin forced a reset.
+  user.resetToken = null;
   await user.save();
   return { success: true };
 };

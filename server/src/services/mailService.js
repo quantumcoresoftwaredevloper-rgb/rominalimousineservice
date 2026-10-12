@@ -1,31 +1,96 @@
 import nodemailer from 'nodemailer';
 
-// SMTP is optional. When not configured, emails are logged to the console so
-// every flow (verification, password reset) stays testable in development.
+/**
+ * Transactional email (verification, password reset).
+ *
+ * SMTP is optional in development: with no credentials the message is printed
+ * and the flow still returns success, so the app is testable without a mailbox.
+ *
+ * That fallback is the problem in production. It returned undefined, callers
+ * treated it as delivered, and the UI told users "check your inbox" — so a
+ * misconfigured server produced a perfectly green, completely broken password
+ * reset with no error anywhere. `sendMail` now throws MailNotConfigured instead,
+ * and the two flows that depend on it surface a real message.
+ */
+
 let transporter = null;
+let transporterError = null;
 
-const configured = process.env.SMTP_HOST && process.env.SMTP_USER;
+// Resolved lazily rather than at import time. dotenv ordering is implicit when
+// this runs at module load: config/db.js and config/passport.js each call
+// dotenv.config(), and the only reason it worked was that ESM happened to
+// evaluate them first. Resolving on first use removes that dependency.
+const resolveTransporter = () => {
+  if (transporter || transporterError) return transporter;
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_SECURE, SMTP_FROM } = process.env;
+  if (!SMTP_HOST || !SMTP_USER) {
+    transporterError = 'SMTP_HOST and SMTP_USER are not set';
+    return null;
+  }
+  if (!SMTP_PASS) {
+    transporterError = 'SMTP_PASS is not set';
+    return null;
+  }
+  try {
+    transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: Number(SMTP_PORT || 587),
+      secure: SMTP_SECURE === 'true',
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+    });
+    _from = SMTP_FROM || SMTP_USER;
+  } catch (err) {
+    transporterError = err.message;
+    transporter = null;
+  }
+  return transporter;
+};
 
-if (configured) {
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
+let _from = '';
+
+export class MailNotConfigured extends Error {
+  constructor(reason) {
+    super(`Email delivery is not configured (${reason})`);
+    this.name = 'MailNotConfigured';
+    this.statusCode = 503;
+    this.code = 'MAIL_NOT_CONFIGURED';
+  }
 }
 
-export const sendMail = async ({ to, subject, html }) => {
-  if (!transporter) {
-    console.log(`\n[DEV MAIL] to=${to} subject="${subject}"\n${html}\n`);
-    return;
+const devMode = () => process.env.NODE_ENV !== 'production';
+
+/**
+ * Sends a message.
+ *
+ * In production with no working SMTP this throws MailNotConfigured, so a caller
+ * can tell the user something is broken instead of claiming success. In
+ * development it logs and returns, which keeps local testing possible.
+ */
+export const sendMail = async ({ to, subject, html, text }) => {
+  const tx = resolveTransporter();
+
+  if (!tx) {
+    if (devMode()) {
+      console.log(`\n[DEV MAIL] to=${to} subject="${subject}"\n${text || html}\n`);
+      return { delivered: false, dev: true };
+    }
+    throw new MailNotConfigured(transporterError || 'unknown');
   }
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+
+  // Plain-text alternative alongside the HTML. Without it, plain-text mail
+  // clients and several spam filters render the raw markup.
+  await tx.sendMail({
+    from: _from,
     to,
     subject,
     html,
+    ...(text ? { text } : {}),
   });
+  return { delivered: true };
 };
 
-export const isMailConfigured = () => configured;
+/** True when a working transport exists. Safe to call before any send. */
+export const isMailConfigured = () => {
+  resolveTransporter();
+  return Boolean(transporter);
+};

@@ -21,8 +21,8 @@ export default function ResetPassword() {
       setError("This reset link is invalid. Request a new one.");
       return;
     }
-    if (form.password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    if (form.password.length < 10) {
+      setError("Password must be at least 10 characters.");
       return;
     }
     if (form.password !== form.confirm) {
@@ -45,7 +45,7 @@ export default function ResetPassword() {
   return (
     <AuthLayout
       title={done ? "Password updated" : "Choose a new password"}
-      subtitle={done ? undefined : "Make sure it's at least 6 characters."}
+      subtitle={done ? undefined : "Use at least 10 characters. Longer is stronger than complicated."}
       footer={
         done ? (
           <Link

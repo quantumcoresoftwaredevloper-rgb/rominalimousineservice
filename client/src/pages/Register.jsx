@@ -29,8 +29,8 @@ export default function Register() {
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    if (form.password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (form.password.length < 10) {
+      setError('Password must be at least 10 characters');
       return;
     }
     setLoading(true);

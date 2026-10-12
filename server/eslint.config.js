@@ -10,6 +10,9 @@ export default [
         fetch: 'readonly',
         URL: 'readonly',
         AbortSignal: 'readonly',
+        TextEncoder: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
     },
     rules: {

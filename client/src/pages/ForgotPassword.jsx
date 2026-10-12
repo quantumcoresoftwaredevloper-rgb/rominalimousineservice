@@ -25,7 +25,18 @@ export default function ForgotPassword() {
       setSent(true);
       setDevLink(data.resetLink || '');
     } catch (err) {
-      setError(err.response?.data?.message || 'Something went wrong. Try again.');
+      // MAIL_NOT_CONFIGURED is an operator problem, not a user error, and the
+      // user must be told the truth rather than "check your inbox" for a mail
+      // that was never sent. Every other message is shown as-is so a genuine
+      // rate-limit or server message is not swallowed.
+      const code = err.response?.data?.code;
+      if (code === 'MAIL_NOT_CONFIGURED') {
+        setError('Password reset by email is temporarily unavailable. Please contact us and we will help you.');
+      } else if (err.response?.status === 429) {
+        setError('Too many requests. Please wait a few minutes before trying again.');
+      } else {
+        setError(err.response?.data?.message || 'Something went wrong. Try again.');
+      }
     } finally {
       setLoading(false);
     }

@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import { passwordPolicyError, logoutAll } from './authService.js';
 import Location from '../models/Location.js';
 import RefreshToken from '../models/RefreshToken.js';
 import Ride from '../models/Ride.js';
@@ -38,7 +39,8 @@ export const createUser = async (body = {}) => {
   if (!name || !String(name).trim()) throw fail('Name is required', 400);
   const cleanEmail = String(email ?? '').trim().toLowerCase();
   if (!EMAIL_RE.test(cleanEmail)) throw fail('Valid email required', 400);
-  if (!password || String(password).length < 6) throw fail('Password must be at least 6 characters', 400);
+  const policyError = passwordPolicyError(password, { email: cleanEmail, name });
+  if (policyError) throw fail(policyError, 400);
   if (!MANAGED_ROLES.includes(role)) throw fail('Role must be passenger or driver', 400);
   if (await User.findOne({ email: cleanEmail })) throw fail('Email already in use', 409);
   const cleanPhone = String(phone ?? '').trim();
@@ -93,9 +95,13 @@ export const updateUser = async (userId, body = {}) => {
     if (phone && (await User.findOne({ phone, _id: { $ne: userId } }))) throw fail('Phone already in use', 409);
     user.phone = phone;
   }
-  if (body.password !== undefined && body.password !== '') {
-    if (String(body.password).length < 6) throw fail('Password must be at least 6 characters', 400);
+  const passwordChanged = body.password !== undefined && body.password !== '';
+  if (passwordChanged) {
+    const policyError = passwordPolicyError(body.password, { email: user.email, name: user.name });
+    if (policyError) throw fail(policyError, 400);
     user.password = body.password; // hashed by the pre-save hook
+    // An outstanding reset link must not survive an admin-forced change.
+    user.resetToken = null;
   }
   if (body.role !== undefined && body.role !== user.role) {
     if (!MANAGED_ROLES.includes(body.role)) throw fail('Role must be passenger or driver', 400);
@@ -110,6 +116,12 @@ export const updateUser = async (userId, body = {}) => {
   // UI never called. Admin could tick "Email verified" and "Available" and the
   // driver still could not go online.
   if (body.isApproved !== undefined && user.role === 'driver') {
+    // Approval requires a verified email. Without this the verification flow
+    // was decorative: anyone could register on a disposable address, be
+    // approved as a driver, and never prove control of it.
+    if (body.isApproved === true && !user.emailVerified) {
+      throw fail('This driver must verify their email before you can approve them', 400);
+    }
     user.isApproved = body.isApproved === true;
   }
 
@@ -135,6 +147,12 @@ export const updateUser = async (userId, body = {}) => {
 
   if (user.isSuspended) {
     await RefreshToken.updateMany({ user: user._id, revokedAt: null }, { revokedAt: new Date() });
+  }
+  // A forced password change is the response to a suspected compromise, so the
+  // attacker's existing access must die with it. This previously left every
+  // stolen session valid.
+  if (passwordChanged) {
+    await logoutAll(user._id);
   }
   return User.findById(user._id).select('-password');
 };
