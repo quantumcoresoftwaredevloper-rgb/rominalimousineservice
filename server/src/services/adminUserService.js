@@ -1,13 +1,9 @@
 import User from '../models/User.js';
 import { passwordPolicyError, logoutAll } from './authService.js';
-import Location from '../models/Location.js';
 import RefreshToken from '../models/RefreshToken.js';
-import Ride from '../models/Ride.js';
-import Payment from '../models/Payment.js';
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Admin can only manage passenger/driver accounts — staff & admins are protected.
 export const MANAGED_ROLES = ['passenger', 'driver'];
@@ -56,21 +52,6 @@ export const createUser = async (body = {}) => {
     driverDetails: role === 'driver' ? sanitizeDriverDetails(driverDetails) : undefined,
   });
   return User.findById(user._id).select('-password');
-};
-
-// GET /api/admin/users?search=&role=&page=&limit=
-export const listUsers = async ({ search = '', role = '', page = 1, limit = 20 }) => {
-  const query = {};
-  if (role) query.role = role;
-  if (search) {
-    const rx = new RegExp(escapeRx(String(search)), 'i');
-    query.$or = [{ name: rx }, { email: rx }, { phone: rx }];
-  }
-  const [users, total] = await Promise.all([
-    User.find(query).select('-password').sort({ createdAt: -1 }).skip((+page - 1) * +limit).limit(+limit),
-    User.countDocuments(query),
-  ]);
-  return { users, total, page: +page, limit: +limit };
 };
 
 // PATCH /api/admin/users/:id — edit name/email/phone/role/password,
@@ -155,35 +136,4 @@ export const updateUser = async (userId, body = {}) => {
     await logoutAll(user._id);
   }
   return User.findById(user._id).select('-password');
-};
-
-// PATCH /api/admin/users/:id/suspend
-export const suspendUser = async (userId) => {
-  const user = await User.findByIdAndUpdate(userId, { isSuspended: true }, { new: true }).select('-password');
-  if (!user) throw fail('User not found', 404);
-  await RefreshToken.updateMany({ user: user._id, revokedAt: null }, { revokedAt: new Date() });
-  return user;
-};
-
-// PATCH /api/admin/users/:id/unsuspend
-export const unsuspendUser = async (userId) => {
-  const user = await User.findByIdAndUpdate(userId, { isSuspended: false }, { new: true }).select('-password');
-  if (!user) throw fail('User not found', 404);
-  return user;
-};
-
-// DELETE /api/admin/users/:id — permanently delete a user + their data.
-export const deleteUser = async (userId) => {
-  const user = await User.findById(userId);
-  if (!user) throw fail('User not found', 404);
-  if (user.role === 'admin') throw fail('Cannot delete an admin account', 400);
-
-  await Promise.all([
-    User.deleteOne({ _id: user._id }),
-    Location.deleteMany({ driver: user._id }),
-    RefreshToken.deleteMany({ user: user._id }),
-    Ride.deleteMany({ $or: [{ passenger: user._id }, { driver: user._id }] }),
-    Payment.deleteMany({ user: user._id }),
-  ]);
-  return { success: true };
 };

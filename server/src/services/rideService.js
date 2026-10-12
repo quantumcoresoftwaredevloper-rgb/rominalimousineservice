@@ -161,12 +161,19 @@ const assertDistinctStops = (pickup, dropoff) => {
   const metres = haversineM(pickup, dropoff);
   if (metres < MIN_TRIP_M) {
     const err = new Error('Pickup and drop-off must be different locations');
-    err.status = 400;
+    // The error handler reads `statusCode`; setting `status` meant an identical
+    // pickup/dropoff returned 500 instead of 400.
+    err.statusCode = 400;
     throw err;
   }
 };
 
 export const createRide = async (passengerId, input) => {
+  // Dereferenced input.pickup.lat with no presence check, so a body without
+  // pickup threw a raw TypeError and surfaced as a 500.
+  if (!input?.pickup || !input?.dropoff) {
+    throw Object.assign(new Error('Pickup and drop-off are required'), { statusCode: 400 });
+  }
   const pickup = input.pickup.lat ? input.pickup : await geocode(input.pickup);
   const dropoff = input.dropoff.lat ? input.dropoff : await geocode(input.dropoff);
 
@@ -203,79 +210,80 @@ export const createRide = async (passengerId, input) => {
   return populated;
 };
 
+// Progressive radius expansion so a passenger near Ellicott City still finds
+// drivers within the service area.
+const NEARBY_RADII = [25000, 50000];
+const NEARBY_MAX_DRIVERS = 50;
+
+// Hottest endpoint in the product: POST /api/rides calls it, and every
+// visitor on /reservations polls it every 8 seconds.
+//
+// It previously ran up to SIX sequential geospatial round trips — the "exact
+// vehicle match" query and the "fallback" query were identical whenever a
+// vehicleType was supplied (which is always, from both callers), so the same
+// work ran twice per radius. Neither query had a .limit(), so an empty 50km
+// search scanned every Location document and populated every driver before
+// returning nothing.
 export const findNearbyDrivers = async ({ lat, lng, radius = RADIUS_M, vehicleType }) => {
   // Guard against NaN/Infinity from map clicks or geocoding edge
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
-  const makeMatch = (r) => ({
-    coordinates: {
-      $near: {
-        $geometry: { type: 'Point', coordinates: [lng, lat] },
-        $maxDistance: r,
-      },
-    },
+  // Defence in depth: never let a non-finite or negative $maxDistance reach
+  // Mongo, and cap the expansion so this endpoint cannot enumerate the fleet.
+  const safeR = (r) => {
+    const n = Number(r);
+    if (!Number.isFinite(n) || n <= 0) return RADIUS_M;
+    return Math.min(n, 50000);
+  };
+
+  const driverMatch = {
+    role: 'driver',
+    isApproved: true,
+    'driverDetails.isAvailable': true,
+    ...(vehicleType ? { 'driverDetails.vehicleType': vehicleType } : {}),
+  };
+
+  const haversineKm = (coordinates) => {
+    const R = 6371;
+    const dLat = (coordinates[1] - lat) * (Math.PI / 180);
+    const dLon = (coordinates[0] - lng) * (Math.PI / 180);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat * Math.PI) / 180) *
+        Math.cos((coordinates[1] * Math.PI) / 180) *
+        Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.asin(Math.sqrt(a));
+  };
+
+  const shape = (l) => ({
+    _id: l.driver._id,
+    name: l.driver.name,
+    phone: l.driver.phone,
+    avatar: l.driver.avatar,
+    vehicleType: l.driver.driverDetails?.vehicleType,
+    plateNumber: l.driver.driverDetails?.plateNumber,
+    lat: l.coordinates.coordinates[1],
+    lng: l.coordinates.coordinates[0],
+    heading: l.heading ?? 0,
+    speed: l.speed ?? 0,
+    distanceKm: Math.round(haversineKm(l.coordinates.coordinates) * 10) / 10,
   });
 
-  // Progressive radius expansion: 10km → 25km → 50km → show distance
-  // Ensures passenger near Ellicott City (8km) always finds drivers within service area
-  const radii = [radius, 25000, 50000];
-  for (const r of radii) {
-    const match = makeMatch(r);
-    // Try exact vehicle match first
-    if (vehicleType) {
-      const exact = await Location.find(match).populate({
-        path: 'driver',
-        match: { role: 'driver', isApproved: true, 'driverDetails.isAvailable': true, 'driverDetails.vehicleType': vehicleType },
-      });
-      const filtered = exact.filter((l) => l.driver);
-      if (filtered.length > 0) {
-        return filtered.map((l) => ({
-          _id: l.driver._id,
-          name: l.driver.name,
-          phone: l.driver.phone,
-          avatar: l.driver.avatar,
-          vehicleType: l.driver.driverDetails?.vehicleType,
-          plateNumber: l.driver.driverDetails?.plateNumber,
-          lat: l.coordinates.coordinates[1],
-          lng: l.coordinates.coordinates[0],
-          heading: l.heading ?? 0,
-          speed: l.speed ?? 0,
-          distanceKm: Math.round((() => {
-            const R=6371, dLat=(l.coordinates.coordinates[1]-lat)*Math.PI/180, dLon=(l.coordinates.coordinates[0]-lng)*Math.PI/180;
-            const a=Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180)*Math.cos(l.coordinates.coordinates[1]*Math.PI/180)*Math.sin(dLon/2)**2;
-            return  R*2*Math.asin(Math.sqrt(a));
-          })()*10)/10,
-        }));
-      }
-    }
-    const fallback = await Location.find(match).populate({
-      path: 'driver',
-      match: {
-        role: 'driver',
-        isApproved: true,
-        'driverDetails.isAvailable': true,
-        ...(vehicleType ? { 'driverDetails.vehicleType': vehicleType } : {}),
+  // Tightest radius first, then widen. Sequential is deliberate: the wider
+  // queries only run when the narrow one comes back empty.
+  for (const r of [radius, ...NEARBY_RADII]) {
+    const found = await Location.find({
+      coordinates: {
+        $near: {
+          $geometry: { type: 'Point', coordinates: [lng, lat] },
+          $maxDistance: safeR(r),
+        },
       },
-    });
-    const filtered = fallback.filter((l) => l.driver);
-    if (filtered.length > 0) {
-      return filtered.map((l) => ({
-        _id: l.driver._id,
-        name: l.driver.name,
-        phone: l.driver.phone,
-        avatar: l.driver.avatar,
-        vehicleType: l.driver.driverDetails?.vehicleType,
-        plateNumber: l.driver.driverDetails?.plateNumber,
-        lat: l.coordinates.coordinates[1],
-        lng: l.coordinates.coordinates[0],
-        heading: l.heading ?? 0,
-        speed: l.speed ?? 0,
-        distanceKm: Math.round((() => {
-          const R=6371, dLat=(l.coordinates.coordinates[1]-lat)*Math.PI/180, dLon=(l.coordinates.coordinates[0]-lng)*Math.PI/180;
-          const a=Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180)*Math.cos(l.coordinates.coordinates[1]*Math.PI/180)*Math.sin(dLon/2)**2;
-          return  R*2*Math.asin(Math.sqrt(a));
-        })()*10)/10,
-      }));
-    }
+    })
+      .limit(NEARBY_MAX_DRIVERS)
+      .populate({ path: 'driver', match: driverMatch });
+
+    const matched = found.filter((l) => l.driver);
+    if (matched.length > 0) return matched.map(shape);
   }
 
   // If still none, return empty — caller should show service-area warning (MD/DC/VA)
@@ -283,20 +291,43 @@ export const findNearbyDrivers = async ({ lat, lng, radius = RADIUS_M, vehicleTy
 };
 
 export const acceptRide = async (rideId, driverId) => {
-  const ride = await Ride.findOne({ _id: rideId, status: 'pending' });
-  if (!ride) throw Object.assign(new Error('Ride is no longer available'), { statusCode: 409 });
+  // Both guards below used to be read-then-write, so two drivers hitting the
+  // same pending ride both saw "available" and both saved — last write won,
+  // but both were already sent ride:driverFound and both got a notification,
+  // so two cars set off for one passenger. A driver could likewise accept a
+  // second ride while the first was still active.
+  // findOneAndUpdate with a state predicate makes each claim a single atomic
+  // database operation: whoever flips pending -> accepted first owns the ride.
+  const claimed = await Ride.findOneAndUpdate(
+    { _id: rideId, status: 'pending', driver: null },
+    { $set: { driver: driverId, status: 'accepted', 'timestamps.accepted': new Date() } },
+    { new: true },
+  );
+  if (!claimed) {
+    const current = await Ride.findById(rideId).select('driver status');
+    if (!current) throw Object.assign(new Error('Ride not found'), { statusCode: 404 });
+    // Re-accepting your own ride is idempotent rather than an error.
+    if (String(current.driver) === String(driverId) && current.status === 'accepted') {
+      return Ride.findById(rideId).populate('passenger driver', 'name phone avatar driverDetails');
+    }
+    throw Object.assign(new Error('Ride is no longer available'), { statusCode: 409 });
+  }
 
+  // Advisory check: it cannot be a hard invariant without a partial unique
+  // index on Ride, so the claim above stays the authoritative gate.
   const busy = await Ride.findOne({
     driver: driverId,
     status: { $in: ['accepted', 'arriving', 'in_progress'] },
     _id: { $ne: rideId },
   }).select('_id');
-  if (busy) throw Object.assign(new Error('You already have an active ride'), { statusCode: 409 });
-
-  ride.driver = driverId;
-  ride.status = 'accepted';
-  ride.timestamps.accepted = new Date();
-  await ride.save();
+  if (busy) {
+    // Roll the claim back so a busy driver does not hold a ride they cannot service.
+    await Ride.findOneAndUpdate(
+      { _id: rideId, driver: driverId, status: 'accepted' },
+      { $set: { driver: null, status: 'pending' }, $unset: { 'timestamps.accepted': '' } },
+    );
+    throw Object.assign(new Error('You already have an active ride'), { statusCode: 409 });
+  }
 
   return Ride.findById(rideId).populate('passenger driver', 'name phone avatar driverDetails');
 };
@@ -448,13 +479,16 @@ export const cancelRide = async (rideId, userId, reason = '') => {
   return ride;
 };
 
-export const rateRide = async (rideId, userId, { score, comment, compliments = [] }) => {
+export const rateRide = async (rideId, userId, { score, comment, compliments }) => {
+  // The default only applied when the key was absent. A string body made
+  // compliments.filter(...) throw TypeError -> 500.
+  const complimentList = Array.isArray(compliments) ? compliments : [];
   const ride = await Ride.findOne({ _id: rideId, status: 'completed', passenger: userId });
   if (!ride) throw Object.assign(new Error('Completed ride not found'), { statusCode: 404 });
   if (ride.rating?.score) throw Object.assign(new Error('Already rated'), { statusCode: 409 });
   if (!score || score < 1 || score > 5) throw Object.assign(new Error('Score 1-5 required'), { statusCode: 400 });
 
-  ride.rating = { score, comment: (comment||'').slice(0,500), compliments: compliments.filter(c=>['clean','professional','friendly','safe'].includes(c)), createdAt: new Date() };
+  ride.rating = { score, comment: (comment||'').slice(0,500), compliments: complimentList.filter(c=>['clean','professional','friendly','safe'].includes(c)), createdAt: new Date() };
   await ride.save();
 
   // Update driver's aggregate — Uber-like: avg = (oldAvg*count + score)/(count+1)
@@ -470,10 +504,10 @@ export const rateRide = async (rideId, userId, { score, comment, compliments = [
           'driverDetails.stats.ratingCount': newCount,
         },
         $inc: {
-          ...(compliments.includes('clean') ? {'driverDetails.stats.compliments.clean':1} : {}),
-          ...(compliments.includes('professional') ? {'driverDetails.stats.compliments.professional':1} : {}),
-          ...(compliments.includes('friendly') ? {'driverDetails.stats.compliments.friendly':1} : {}),
-          ...(compliments.includes('safe') ? {'driverDetails.stats.compliments.safe':1} : {}),
+          ...(complimentList.includes('clean') ? {'driverDetails.stats.compliments.clean':1} : {}),
+          ...(complimentList.includes('professional') ? {'driverDetails.stats.compliments.professional':1} : {}),
+          ...(complimentList.includes('friendly') ? {'driverDetails.stats.compliments.friendly':1} : {}),
+          ...(complimentList.includes('safe') ? {'driverDetails.stats.compliments.safe':1} : {}),
           'driverDetails.stats.totalRides': 0, // keep count separate via Ride aggregate, not here
         }
       });
@@ -496,11 +530,24 @@ export const getRideById = async (id, requester = null) => {
   return ride;
 };
 
+// Roles allowed to see every ride. Kept explicit because the scoping below
+// defaults to deny: a new role added to the enum must be added here
+// deliberately rather than inheriting the full ride table by omission.
+const FULL_RIDE_VISIBILITY = ['admin', 'super_admin', 'dispatcher', 'manager'];
+
 export const listRides = async (user, filters = {}) => {
-  const query = {};
-  if (user.role === 'passenger') query.passenger = user._id;
-  if (user.role === 'driver') query.driver = user._id;
-  if (user.role === 'admin') {
+  // This was an if-chain with no else, so any role that was not
+  // passenger/driver/admin left `query` as {} and returned the entire ride
+  // table — every passenger's pickup, drop-off, phone and assigned driver — to
+  // support, finance, dispatcher and manager. Fail closed instead.
+  let query;
+  if (FULL_RIDE_VISIBILITY.includes(user.role)) {
+    query = {};
+    if (filters.status) query.status = filters.status;
+  } else if (user.role === 'driver') {
+    query = { driver: user._id };
+  } else {
+    query = { passenger: user._id };
     if (filters.status) query.status = filters.status;
   }
 

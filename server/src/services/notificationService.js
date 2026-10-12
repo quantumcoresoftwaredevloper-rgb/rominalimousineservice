@@ -1,7 +1,7 @@
 import webpush from 'web-push';
 import Notification from '../models/Notification.js';
 import User from '../models/User.js';
-import { sendMail } from './mailService.js';
+import { sendMail , escapeHtml } from './mailService.js';
 import { sendSms } from './smsService.js';
 
 // Web push is optional. VAPID keys live in .env (generate with
@@ -17,13 +17,8 @@ if (vapidConfigured) {
   );
 }
 
-export const isPushConfigured = () => vapidConfigured;
-
 const appUrl = () => process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
-// Central notifier: writes an in-app Notification row (persisted), and fans out
-// to the user's live socket room + email/SMS/web-push when configured. `io` is
-// optional so tests can call notify without a live socket server.
 export const notify = async ({ user, type, title, message, data = {}, io }) => {
   const doc = await Notification.create({ user, type, title, message, data });
 
@@ -36,8 +31,8 @@ export const notify = async ({ user, type, title, message, data = {}, io }) => {
   if (recipient.email) {
     sendMail({
       to: recipient.email,
-      subject: title,
-      html: `<p>${message || title}</p><p><a href="${appUrl()}">Open Romina Limousine Service</a></p>`,
+      subject: String(title ?? '').replace(/[\r\n]+/g, ' '),
+      html: `<p>${escapeHtml(message || title)}</p><p><a href="${escapeHtml(appUrl())}">Open Romina Limousine Service</a></p>`,
     }).catch(() => {});
   }
   if (recipient.phone && type !== 'system') {

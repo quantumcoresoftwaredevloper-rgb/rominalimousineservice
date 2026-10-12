@@ -105,6 +105,21 @@ export function BookingMap({ center, pickup, dropoff, route, drivers = [], userP
     [route]
   );
 
+  // Icons are memoised per driver. react-leaflet's Marker calls
+  // marker.setIcon() whenever the icon object reference changes, and calling
+  // uberIconFor() inline in JSX produced a brand-new object on every render --
+  // so each 8s driver poll rebuilt every marker DOM node (twice, because the
+  // poll flips `loadingDrivers`). It also stopped the CSS heading transition
+  // from ever playing, since the node was replaced outright rather than moved.
+  const driverIcons = useMemo(() => {
+    const map = new Map();
+    for (const d of drivers || []) {
+      map.set(d._id, uberIconFor(d.vehicleType, d.heading));
+    }
+    return map;
+  }, [drivers]);
+  const fallbackDriverIcon = useMemo(() => uberIconFor('executive-sedan', 0), []);
+
   // Don't double-stack the blue dot under the green pickup pin when both are
   // the user's location (auto-set "Current location").
   const sameAsPickup =
@@ -150,13 +165,19 @@ export function BookingMap({ center, pickup, dropoff, route, drivers = [], userP
           </Marker>
         )}
 
+        {/* Icons are memoised per driver. react-leaflet's Marker calls
+            marker.setIcon() whenever the icon object reference changes, and an
+            inline factory produces a new object every render -- so every poll
+            (8s) rebuilt every marker DOM node twice. It also broke the CSS
+            heading transition, which never played because the node was
+            replaced outright. */}
         {/* Nearby available drivers — Premium oriented cars */}
         {drivers.map((d) =>
           d.lat != null && d.lng != null ? (
             <Marker
               key={d._id}
               position={[d.lat, d.lng]}
-              icon={uberIconFor(d.vehicleType, d.heading)}
+              icon={driverIcons.get(d._id) || fallbackDriverIcon}
             >
               <Popup>
                 <div className="text-sm">

@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import { Buffer } from 'node:buffer';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import RefreshToken from '../models/RefreshToken.js';
@@ -173,8 +175,6 @@ const sanitizePublicDriverDetails = (input) => {
     isAvailable: false,
   };
 };
-
-export const BOOKABLE_VEHICLE_TYPES = BOOKABLE_VEHICLES;
 
 /* ---------- email helpers ---------- */
 const appUrl = () => process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -388,7 +388,10 @@ const OTP_MAX_ATTEMPTS = 5;
 export const sendOtp = async (phone) => {
   if (!phone || !PHONE_RE.test(phone)) throw fail('Enter a valid phone number.', 400);
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // Math.random() is V8's xorshift128+: a handful of consecutive outputs is
+  // enough to recover its internal state and predict subsequent values, which
+  // is a documented attack against OTP schemes. randomInt is a CSPRNG.
+  const code = String(crypto.randomInt(100000, 1000000));
   await OtpCode.deleteMany({ phone });
   await OtpCode.create({
     phone,
@@ -402,7 +405,10 @@ export const sendOtp = async (phone) => {
     body: `Your Romina Limousine Service verification code is ${code}. It expires in 10 minutes.`,
   });
   // In dev (no Twilio) return the code so the flow can be tested end-to-end.
-  return { devCode: isSmsConfigured() ? undefined : code };
+  // Gate on NODE_ENV explicitly: without this, a production deploy missing
+  // TWILIO_* handed every caller a valid OTP in the HTTP response.
+  const exposeCode = !isSmsConfigured() && process.env.NODE_ENV !== 'production';
+  return { devCode: exposeCode ? code : undefined };
 };
 
 export const verifyOtp = async ({ phone, code, userAgent = '', ip = '' }) => {
@@ -417,7 +423,14 @@ export const verifyOtp = async ({ phone, code, userAgent = '', ip = '' }) => {
     await otp.deleteOne();
     throw fail('Too many attempts. Request a new code.', 400);
   }
-  if (otp.codeHash !== hashToken(String(code).trim())) {
+  // timingSafeEqual throws on length mismatch, so compare lengths first, then
+  // use a constant-time compare. Plain !== short-circuits on the first
+  // differing byte and leaks how much of a guess was correct.
+  const candidate = Buffer.from(hashToken(String(code).trim()), 'utf8');
+  const stored = Buffer.from(otp.codeHash || '', 'utf8');
+  const matches =
+    candidate.length === stored.length && crypto.timingSafeEqual(candidate, stored);
+  if (!matches) {
     otp.attempts += 1;
     await otp.save();
     throw fail('Invalid code.', 400);

@@ -99,6 +99,10 @@ rideSchema.index({ passenger: 1, status: 1 });
 rideSchema.index({ driver: 1, status: 1 });
 rideSchema.index({ driver: 1, createdAt: -1 });
 rideSchema.index({ passenger: 1, createdAt: -1 });
+// The CRM analytics timeseries runs $match on a bare createdAt range. Every
+// existing index leads with status/passenger/driver, so none could serve it and
+// each page load did a full collection scan plus an in-memory $group/$sort.
+rideSchema.index({ createdAt: -1 });
 
 const Ride = mongoose.model('Ride', rideSchema);
 export default Ride;

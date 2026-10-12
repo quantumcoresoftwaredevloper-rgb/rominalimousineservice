@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Polyline, AttributionControl } from 'react-leaflet';
 import L from 'leaflet';
@@ -56,6 +56,7 @@ export default function RideTracking() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [eta, setEta] = useState(null);
+  const driverIcon = useMemo(() => uberDriverIcon(driverPos?.heading || 0), [driverPos?.heading]);
   const [driverRoute, setDriverRoute] = useState([]);
   const [mapView, setMapView] = useState('streets');
   const [showPay, setShowPay] = useState(false);
@@ -242,7 +243,7 @@ export default function RideTracking() {
                 <Marker position={[ride.pickup.lat, ride.pickup.lng]} icon={pickupIcon} />
               )}
               {driverPos && (
-                <Marker position={[driverPos.lat, driverPos.lng]} icon={uberDriverIcon(driverPos.heading || 0)} />
+                <Marker position={[driverPos.lat, driverPos.lng]} icon={driverIcon} />
               )}
               {driverRoute.length > 0 && (
                 <>

@@ -1,5 +1,18 @@
 import nodemailer from 'nodemailer';
 
+// Single HTML-escaping implementation shared by every mail producer. Messages
+// reach notify() built from user-controlled fields (ride dropoff address,
+// cancelReason taken straight from req.body.reason, passenger name), and those
+// were interpolated into the email body verbatim — so a booking address of
+// `<img src=x onerror=...>` executed in the operator's mailbox.
+export const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 /**
  * Transactional email (verification, password reset).
  *

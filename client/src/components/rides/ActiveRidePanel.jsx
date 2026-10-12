@@ -44,6 +44,13 @@ const STATUS_TEXT = {
 // status controls. `driverPos` is the driver's own geolocation; `passengerPos`
 // is the streamed live passenger position (falls back to the pickup point).
 export default function ActiveRidePanel({ ride, driverPos, passengerPos, onStatus, busyStatus }) {
+
+  // Memoised so react-leaflet's marker.setIcon() identity check stays stable.
+  // Called inline it returned a new divIcon on every render, rebuilding the
+  // marker DOM node on every socket position update (every 2s) and preventing
+  // the CSS heading transition from ever playing.
+
+  const driverIcon = useMemo(() => uberDriverIcon(driverPos?.heading || 0), [driverPos?.heading]);
   const [view, setView] = useState('streets');
   const activeView = MAP_VIEWS.find((v) => v.id === view) || MAP_VIEWS[0];
   const routePositions = useMemo(
@@ -105,7 +112,7 @@ export default function ActiveRidePanel({ ride, driverPos, passengerPos, onStatu
               </Marker>
             )}
             {driverPos && (
-              <Marker position={[driverPos.lat, driverPos.lng]} icon={uberDriverIcon(driverPos.heading || 0)}>
+              <Marker position={[driverPos.lat, driverPos.lng]} icon={driverIcon}>
                 <Popup>You — heading {Math.round(driverPos.heading || 0)}°</Popup>
               </Marker>
             )}

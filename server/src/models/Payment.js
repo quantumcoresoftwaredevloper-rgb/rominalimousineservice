@@ -6,7 +6,7 @@ import mongoose from 'mongoose';
 const paymentSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    ride: { type: mongoose.Schema.Types.ObjectId, ref: 'Ride', required: true, index: true },
+    ride: { type: mongoose.Schema.Types.ObjectId, ref: 'Ride', required: true },
     amount: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'USD' },
     method: { type: String, enum: ['card', 'wallet', 'cash'], default: 'card' },
@@ -30,6 +30,24 @@ const paymentSchema = new mongoose.Schema(
 );
 
 paymentSchema.index({ user: 1, createdAt: -1 });
+// The admin payments page groups the whole collection by status for its
+// summary tiles. There was no leading status index, so that was a full scan on
+// every page load.
+paymentSchema.index({ status: 1 });
+
+// The real double-charge guard. The idempotencyKey index cannot do this job:
+// the client is told to send a fresh key per attempt, so two concurrent
+// requests carry different keys and the database never sees a conflict. This
+// partial unique index keys on the ride itself and only covers settled states,
+// so the second inserter fails with 11000 and recordSettlement returns the
+// first request's row instead of writing a second one.
+//
+// Must be created in production for the guarantee to hold — the unique flag
+// requires an index build.
+paymentSchema.index(
+  { ride: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: ['succeeded', 'cash'] } } },
+);
 
 const Payment = mongoose.model('Payment', paymentSchema);
 export default Payment;

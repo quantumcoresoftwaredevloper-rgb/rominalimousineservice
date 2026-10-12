@@ -7,7 +7,22 @@ export const nearbyDrivers = asyncHandler(async (req, res) => {
   const { lat, lng, radius, vehicleType } = req.query;
   if (!lat || !lng) return res.status(400).json({ message: 'lat and lng are required' });
 
-  const drivers = await findNearbyDrivers({ lat: +lat, lng: +lng, radius: +radius, vehicleType });
+  // `+radius` on a missing param yields NaN. The service's `radius = RADIUS_M`
+  // default never fires because NaN !== undefined, so $maxDistance became NaN
+  // and the query threw a CastError (surfacing as a 400 leaking Mongoose's
+  // __QueryCasting__ path). A negative radius threw too. And there was no
+  // upper bound: radius=50000000 returned every driver in the fleet with name,
+  // phone and plateNumber, to any authenticated user of any role.
+  const parsed = Number(radius);
+  const safeRadius =
+    Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 25000) : undefined;
+
+  const drivers = await findNearbyDrivers({
+    lat: +lat,
+    lng: +lng,
+    radius: safeRadius,
+    vehicleType,
+  });
   res.json({ drivers });
 });
 

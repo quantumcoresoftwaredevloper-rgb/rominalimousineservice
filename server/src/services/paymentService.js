@@ -22,23 +22,54 @@ const assertPayable = async (userId, rideId) => {
   if (settings.paymentsEnabled === false) {
     throw fail('Online payments are disabled by the operator. Pay by cash or contact support.', 403);
   }
+  // A ride is payable once the trip is done. It used to accept anything not
+  // cancelled, so a passenger could pay the base fare while the ride was still
+  // pending, then edit the drop-off to 100 km away — editRide recomputes the
+  // fare, completed rides set fare.final to the inflated number, and the settled
+  // payment short-circuits any second attempt. The rider paid $12 for a $397
+  // trip.
   const ride = await Ride.findOne({
     _id: rideId,
     passenger: userId,
-    status: { $nin: ['cancelled'] },
+    status: 'completed',
   });
-  if (!ride) throw fail('Ride not found or not yours to pay for', 404);
+  if (!ride) throw fail('Ride not found, not yours, or not completed yet', 404);
   return ride;
 };
 
+// Atomic settle-or-fetch.
+//
+// settledPayment was read-then-write, so two concurrent requests with different
+// idempotency keys both saw "no payment yet" and both inserted — two payment
+// rows for one ride. The caller is explicitly told to send a fresh key per
+// attempt, so the unique index on idempotencyKey never sees a conflict.
+//
+// The guard therefore has to key on the ride itself, not on the caller's key:
+// claim the ride with a conditional write and let exactly one caller win.
 const settledPayment = async (rideId) => {
-  // A ride is settled once an online payment succeeded OR the passenger chose
-  // to pay in cash — either way it must not be charged again.
   const existing = await Payment.findOne({
     ride: rideId,
     status: { $in: ['succeeded', 'cash'] },
   });
-  return existing;
+  if (existing) return existing;
+  return null;
+};
+
+/**
+ * Atomically records the payment for a ride, or returns the one that already
+ * exists. The unique partial index on {ride} for settled statuses is the real
+ * guard; this does the insert and swallows only the duplicate-key race.
+ */
+const recordSettlement = async (rideId, userId, build) => {
+  try {
+    return await Payment.create(build());
+  } catch (err) {
+    if (err?.code === 11000) {
+      // Lost a concurrent race — the other request's row is the real one.
+      return settledPayment(rideId);
+    }
+    throw err;
+  }
 };
 
 const rideAmount = (ride) =>
@@ -96,7 +127,7 @@ export const processPayment = async (userId, rideId, opts = {}) => {
     const amount = rideAmount(ride);
     if (!amount || amount <= 0) throw fail('Cannot record a cash payment with no fare', 400);
 
-    const payment = await Payment.create({
+    const payment = await recordSettlement(rideId, userId, () => ({
       user: userId,
       ride: rideId,
       amount,
@@ -104,7 +135,7 @@ export const processPayment = async (userId, rideId, opts = {}) => {
       provider: 'cash',
       status: 'cash',
       idempotencyKey: idempotencyKey || `ride:${rideId}:cash`,
-    });
+    }));
 
     ride.payment = { method: 'cash', status: 'paid' };
     await ride.save();
@@ -158,7 +189,7 @@ const processStripePayment = async (userId, rideId, { paymentIntentId, idempoten
     // last4 is cosmetic only — non-fatal if the method is already gone.
   }
 
-  const payment = await Payment.create({
+  const payment = await recordSettlement(rideId, userId, () => ({
     user: userId,
     ride: rideId,
     amount,
@@ -168,7 +199,7 @@ const processStripePayment = async (userId, rideId, { paymentIntentId, idempoten
     transactionId: paymentIntentId,
     cardLast4: last4,
     idempotencyKey: idempotencyKey || `pi:${paymentIntentId}`,
-  });
+  }));
 
   ride.payment = {
     method: 'card',
@@ -283,8 +314,6 @@ export const listPayments = async (userId) =>
     .sort({ createdAt: -1 })
     .limit(100)
     .populate('ride', 'pickup dropoff fare status');
-
-export const isStripeEnabled = () => stripeEnabled;
 
 // --- Refund Request flow (passenger asks, admin approves) ---
 import RefundRequest from '../models/RefundRequest.js';

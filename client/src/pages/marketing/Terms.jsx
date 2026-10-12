@@ -1,5 +1,5 @@
 import PageHero from '../../components/marketing/PageHero.jsx';
-import { BRAND_NAME, PHONE_TEL, PHONE_DISPLAY, EMAIL } from '../../data/site.js';
+import { PHONE_TEL, PHONE_DISPLAY, EMAIL } from '../../data/site.js';
 
 const UPDATED = '12 October 2026';
 

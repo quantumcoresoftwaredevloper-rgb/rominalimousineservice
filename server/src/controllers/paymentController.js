@@ -77,16 +77,14 @@ export const requestRefund = asyncHandler(async (req, res) => {
   const io = req.app.get('io');
   // Notify admins via socket + in-app
   const admins = await (await import('../services/rideService.js')).findAdmins();
-  for (const admin of admins) {
-    await notify({
-      user: admin._id,
-      type: 'payment',
-      title: 'Refund requested',
-      message: `Refund $${reqDoc.amount.toFixed(2)} requested: ${reqDoc.reason}`,
-      data: { refundRequestId: reqDoc._id, rideId: reqDoc.ride },
-      io,
-    });
-  }
+  await Promise.all(admins.map((admin) => notify({
+    user: admin._id,
+    type: 'payment',
+    title: 'Refund requested',
+    message: `Refund $${reqDoc.amount.toFixed(2)} requested: ${reqDoc.reason}`,
+    data: { refundRequestId: reqDoc._id, rideId: reqDoc.ride },
+    io,
+  })));
   res.status(201).json({ request: reqDoc });
 });
 

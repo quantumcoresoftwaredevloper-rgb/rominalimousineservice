@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Star, Sparkles, Car, Briefcase, Smile, ShieldCheck } from 'lucide-react';
+import { Star, Sparkles, Briefcase, Smile, ShieldCheck } from 'lucide-react';
 import { rateRide } from '../../services/rideService.js';
 
 const COMPLIMENTS = [

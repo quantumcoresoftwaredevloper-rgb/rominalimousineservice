@@ -33,23 +33,6 @@ export const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// Permission matrix for granular CRM access (resource:action)
-const MATRIX = {
-  super_admin: ['*'],
-  admin: ['*'],
-  dispatcher: ['rides:*', 'drivers:read', 'drivers:assign', 'map:read', 'passengers:read'],
-  manager: ['rides:read', 'analytics:read', 'drivers:read', 'passengers:read', 'finance:read'],
-  finance: ['finance:*', 'rides:read', 'payments:read', 'analytics:read'],
-  support: ['tickets:*', 'passengers:read', 'rides:read', 'notifications:read'],
-  driver: ['rides:read_own', 'rides:update_own'],
-};
-export const requirePerm = (perm) => (req, res, next) => {
-  const role = req.user?.role;
-  if (['super_admin', 'admin'].includes(role)) return next();
-  const perms = MATRIX[role] || [];
-  if (perms.includes('*') || perms.includes(perm) || perms.includes(perm.split(':')[0] + ':*')) return next();
-  return res.status(403).json({ message: `Forbidden: need ${perm}` });
-};
 
 // Drivers must be admin-approved before they can work (go online, accept rides,
 // share location). Passengers/admins are unaffected.

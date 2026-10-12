@@ -37,7 +37,7 @@ export default function RideChat({ rideId }) {
     setText('');
     try {
       await api.post(`/rides/${rideId}/messages`, { text: trimmed });
-    } catch (err) {
+    } catch {
       setMessages(prev=> prev.filter(m=> m !== optimistic));
       // show error via polling will recover
     } finally { setSending(false); }

@@ -66,10 +66,3 @@ export const consumeHandshakeCode = (code) => {
   return entry.userId;
 };
 
-/** Opaque, non-revealing reason codes for the SPA to show. */
-export const HANDSHAKE_ERRORS = {
-  EXCHANGE_FAILED: 'Sign-in could not be completed. Please try again.',
-  EXCHANGE_EXPIRED: 'Sign-in took too long. Please try again.',
-};
-
-export const handshakeStats = () => ({ pending: pending.size, ttlMs: CODE_TTL_MS });

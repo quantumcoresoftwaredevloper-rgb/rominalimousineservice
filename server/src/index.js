@@ -119,6 +119,25 @@ const otpLimiter = rateLimit({
   message: { message: "Too many SMS requests. Please wait a few minutes." },
 });
 
+// Endpoints that are either unauthenticated mail cannons, unauthenticated
+// third-party proxies, or expensive per-call fan-outs. The global apiLimiter
+// (3000/15min) is far too generous for these.
+const quoteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_QUOTE || 5),
+  message: { message: 'Too many quote requests. Please try again later.' },
+});
+
+// Nominatim's usage policy caps this at ~1 req/sec. The global limit let a
+// single client hammer it hard enough to get this server IP blocked.
+const placesLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_PLACES || 20),
+  message: { message: 'Too many searches. Please slow down.' },
+});
+
+app.use("/api/contact/quote", quoteLimiter);
+app.use("/api/places/search", placesLimiter);
 app.use("/api", apiLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/auth/login", loginLimiter);

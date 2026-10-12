@@ -11,6 +11,11 @@ import * as adminUserService from '../services/adminUserService.js';
 import * as contentService from '../services/contentService.js';
 import { notify } from '../services/notificationService.js';
 
+// True for every role outside passenger/driver — i.e. admin, super_admin,
+// dispatcher, manager, finance, support. Mirrors isStaff() in adminUserService,
+// which updateUser already used; suspend/delete bypassed it entirely.
+const isStaffRole = (role) => !['passenger', 'driver'].includes(role);
+
 const ioOf = (req) => req.app.get('io');
 
 // Escape user-supplied search text before building a RegExp — prevents regex
@@ -64,7 +69,12 @@ export const rides = asyncHandler(async (req, res) => {
 
 // GET /api/admin/drivers
 export const drivers = asyncHandler(async (req, res) => {
-  const drivers = await User.find({ role: 'driver' }).select('-password');
+  // pushSubscriptions carries live VAPID keys - never send it to a client.
+  const drivers = await User.find({ role: 'driver' })
+    .select('-password -pushSubscriptions')
+    .sort({ createdAt: -1 })
+    .limit(500)
+    .lean();
   res.json({ drivers });
 });
 
@@ -92,39 +102,43 @@ export const assignDriver = asyncHandler(async (req, res) => {
   io.to('admins').emit('ride:update', { ride, status: ride.status });
 
   if (ride.driver) {
-    await notify({
-      user: ride.passenger._id,
-      type: 'ride',
-      title: 'Driver assigned',
-      message: `${ride.driver.name} has been assigned to your ride.`,
-      data: { rideId: ride._id },
-      io,
-    });
-    await notify({
-      user: ride.driver._id,
-      type: 'ride',
-      title: 'New ride assigned',
-      message: `Pick up ${ride.passenger.name} at ${ride.pickup.address}.`,
-      data: { rideId: ride._id },
-      io,
-    });
+    await Promise.all([
+      notify({
+        user: ride.passenger._id,
+        type: 'ride',
+        title: 'Driver assigned',
+        message: `${ride.driver.name} has been assigned to your ride.`,
+        data: { rideId: ride._id },
+        io,
+      }),
+      notify({
+        user: ride.driver._id,
+        type: 'ride',
+        title: 'New ride assigned',
+        message: `Pick up ${ride.passenger.name} at ${ride.pickup.address}.`,
+        data: { rideId: ride._id },
+        io,
+      }),
+    ]);
   } else if (removedDriverId) {
-    await notify({
-      user: ride.passenger._id,
-      type: 'ride',
-      title: 'Driver reassigned',
-      message: 'Your ride is back on the board; dispatch is finding you another driver.',
-      data: { rideId: ride._id },
-      io,
-    });
-    await notify({
-      user: removedDriverId,
-      type: 'ride',
-      title: 'Assignment removed',
-      message: 'Your assignment to a ride was reassigned by dispatch.',
-      data: { rideId: ride._id },
-      io,
-    });
+    await Promise.all([
+      notify({
+        user: ride.passenger._id,
+        type: 'ride',
+        title: 'Driver reassigned',
+        message: 'Your ride is back on the board; dispatch is finding you another driver.',
+        data: { rideId: ride._id },
+        io,
+      }),
+notify({
+        user: removedDriverId,
+        type: 'ride',
+        title: 'Assignment removed',
+        message: 'Your assignment to a ride was reassigned by dispatch.',
+        data: { rideId: ride._id },
+        io,
+      }),
+    ]);
   }
 
   res.json({ ride });
@@ -165,6 +179,15 @@ export const users = asyncHandler(async (req, res) => {
 
 // PATCH /api/admin/users/:id/suspend
 export const suspendUser = asyncHandler(async (req, res) => {
+  // This had no target-role check at all, and the route is open to support,
+  // finance, dispatcher and manager — so any of them could suspend an admin
+  // or super_admin and revoke that account's live sessions. Reuse the same
+  // staff guard that updateUser already applies.
+  const target = await User.findById(req.params.id).select('role');
+  if (!target) return res.status(404).json({ message: 'User not found' });
+  if (isStaffRole(target.role)) {
+    return res.status(400).json({ message: 'Staff & admin accounts cannot be suspended here' });
+  }
   const user = await User.findByIdAndUpdate(
     req.params.id,
     { isSuspended: true },
@@ -178,6 +201,11 @@ export const suspendUser = asyncHandler(async (req, res) => {
 
 // PATCH /api/admin/users/:id/unsuspend
 export const unsuspendUser = asyncHandler(async (req, res) => {
+  const target = await User.findById(req.params.id).select('role');
+  if (!target) return res.status(404).json({ message: 'User not found' });
+  if (isStaffRole(target.role)) {
+    return res.status(400).json({ message: 'Staff & admin accounts cannot be suspended here' });
+  }
   const user = await User.findByIdAndUpdate(
     req.params.id,
     { isSuspended: false },
@@ -191,7 +219,11 @@ export const unsuspendUser = asyncHandler(async (req, res) => {
 export const deleteUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role === 'admin') return res.status(400).json({ message: 'Cannot delete an admin account' });
+  // Only the literal string 'admin' was checked, so super_admin fell straight
+  // through and could be deleted permanently.
+  if (isStaffRole(user.role)) {
+    return res.status(400).json({ message: 'Cannot delete a staff or admin account' });
+  }
 
   await Promise.all([
     User.deleteOne({ _id: user._id }),

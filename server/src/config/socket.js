@@ -73,18 +73,42 @@ export const initSocket = (io) => {
     });
 
     // Driver publishes position -> forward to the ride room the driver is serving
-    socket.on('driver:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) => {
+    // Per-socket cache of the user's active ride.
+//
+// driver:location and passenger:location fire every 2 seconds per connected
+// user, and each one did a Ride.findOne — 30 queries/min/user purely to
+// discover a ride id that changes only when a ride starts or ends. Cache it on
+// the socket and invalidate on any ride lifecycle event.
+const ACTIVE_RIDE_TTL_MS = 15000;
+const activeRideCache = (socket, userId, role) => {
+  const cached = socket.data?.activeRide;
+  const now = Date.now();
+  if (cached && cached.role === role && now - cached.at < ACTIVE_RIDE_TTL_MS) {
+    return cached.rideId;
+  }
+  return null;
+};
+const setActiveRideCache = (socket, role, rideId) => {
+  socket.data = socket.data || {};
+  socket.data.activeRide = { role, rideId, at: Date.now() };
+};
+socket.on('driver:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) => {
       const driverId = socket.userId;
       if (!driverId || lat == null || lng == null) return;
 
-      const activeRide = await Ride.findOne({
-        driver: driverId,
-        status: { $in: ['accepted', 'arriving', 'in_progress'] },
-      }).select('_id').lean();
+      let rideId = activeRideCache(socket, driverId, 'driver');
+      if (rideId === null) {
+        const activeRide = await Ride.findOne({
+          driver: driverId,
+          status: { $in: ['accepted', 'arriving', 'in_progress'] },
+        }).select('_id').lean();
+        rideId = activeRide?._id || null;
+        setActiveRideCache(socket, 'driver', rideId);
+      }
 
       const payload = { driverId, lat, lng, heading, speed };
-      if (activeRide) {
-        io.to(`ride:${activeRide._id}`).emit('driver:location', payload);
+      if (rideId) {
+        io.to(`ride:${rideId}`).emit('driver:location', payload);
       }
     });
 
@@ -94,14 +118,19 @@ export const initSocket = (io) => {
       const passengerId = socket.userId;
       if (!passengerId || lat == null || lng == null) return;
 
-      const activeRide = await Ride.findOne({
-        passenger: passengerId,
-        status: { $in: ['accepted', 'arriving', 'in_progress'] },
-      }).select('_id').lean();
+      let rideId = activeRideCache(socket, passengerId, 'passenger');
+      if (rideId === null) {
+        const activeRide = await Ride.findOne({
+          passenger: passengerId,
+          status: { $in: ['accepted', 'arriving', 'in_progress'] },
+        }).select('_id').lean();
+        rideId = activeRide?._id || null;
+        setActiveRideCache(socket, 'passenger', rideId);
+      }
 
       const payload = { passengerId, lat, lng, heading, speed };
-      if (activeRide) {
-        io.to(`ride:${activeRide._id}`).emit('passenger:location', payload);
+      if (rideId) {
+        io.to(`ride:${rideId}`).emit('passenger:location', payload);
       }
     });
 

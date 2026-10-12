@@ -27,16 +27,16 @@ export const createRide = asyncHandler(async (req, res) => {
 
   // Notify every admin so dispatch can assign a driver if no one accepts.
   const admins = await rideService.findAdmins();
-  for (const admin of admins) {
-    await notify({
-      user: admin._id,
-      type: 'ride',
-      title: 'New reservation',
-      message: `${ride.passenger.name} booked a ride to ${ride.dropoff.address}.`,
-      data: { rideId: ride._id },
-      io,
-    });
-  }
+  // Serial awaits stacked 2 DB round trips plus channel setup per admin, so
+  // ride creation blocked on N*3 sequential operations before responding.
+  await Promise.all(admins.map((admin) => notify({
+    user: admin._id,
+    type: 'ride',
+    title: 'New reservation',
+    message: `${ride.passenger.name} booked a ride to ${ride.dropoff.address}.`,
+    data: { rideId: ride._id },
+    io,
+  })));
 
   res.status(201).json({ ride });
 });
@@ -137,7 +137,13 @@ export const postMessage = asyncHandler(async (req, res) => {
   const isParticipant = String(ride.passenger._id||ride.passenger)===String(req.user._id) || (ride.driver && String(ride.driver._id||ride.driver)===String(req.user._id));
   if (!isParticipant) return res.status(403).json({ message: 'Not in this ride' });
   const msg = { sender: req.user._id, text: String(text).trim().slice(0,500), at: new Date() };
+  // Unbounded growth: only the last 50 are ever read back, but every message
+  // stayed on the document forever, so a ride document could climb toward the
+  // 16MB limit. Keep the newest 200.
   ride.messages.push(msg);
+  if (ride.messages.length > 200) {
+    ride.messages = ride.messages.slice(-200);
+  }
   await ride.save();
   const io = req.app.get('io');
   io.to(`ride:${ride._id}`).emit('ride:message', { rideId: ride._id, sender: req.user._id, text: msg.text, at: msg.at, senderRole: req.user.role, senderName: req.user.name });

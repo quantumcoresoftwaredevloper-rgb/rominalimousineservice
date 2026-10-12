@@ -51,7 +51,12 @@ export const getPublicSettings = async () => {
 export const updateSettings = async (patch) => {
   const entries = [];
   for (const [key, raw] of Object.entries(patch || {})) {
-    if (!(key in DEFAULTS)) continue;
+    // `in` walks the prototype chain, so 'constructor', 'toString' and
+    // 'valueOf' all passed the guard: VALIDATORS[key] was then undefined and
+    // calling it threw a TypeError (a 500 on the settings endpoint), and the
+    // junk row was written into AppSetting where getSettings() merges it into
+    // every price calculation. hasOwnProperty excludes inherited names.
+    if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) continue;
     const value = VALIDATORS[key](raw);
     if (key.endsWith('Fare') || key.startsWith('per')) {
       if (value !== null && (!Number.isFinite(value) || value < 0)) {
@@ -62,6 +67,9 @@ export const updateSettings = async (patch) => {
       throw fail('supportEmail must be a valid email address', 400);
     }
     if (key === 'supportPhone' && !value) throw fail('supportPhone cannot be empty', 400);
+    if (key === 'supportPhone' && String(value).length > 40) {
+      throw fail('supportPhone is too long', 400);
+    }
     entries.push([key, value]);
   }
   if (!entries.length) return getSettings();
