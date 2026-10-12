@@ -238,6 +238,66 @@ curl -s https://api.ellicottcityairporttaxi.com/api/health   # {"status":"ok"}
 
 ---
 
+## Accounts and credentials
+
+### Admin password
+
+Never type an admin password into a chat, a ticket or a commit. Generate it on
+the box instead — it is shown once and never leaves in plaintext:
+
+```bash
+/usr/local/bin/set-admin-password.sh admin@rominalimo.com
+```
+
+24 characters, ~128 bits of entropy, inside bcrypt's 72-byte limit. It voids any
+outstanding reset link and revokes every existing session for that account,
+which is the right response to a password that has been shared.
+
+Then change it in the app under **Account -> Change password**.
+
+### Password rules
+
+Enforced identically on register, reset, self-service change and admin-forced
+change, via `passwordPolicyError` in `authService.js`:
+
+- minimum **10** characters (was 6, which `admin123` passes)
+- refused above **72 bytes**, because bcrypt silently ignores the remainder and
+  a longer password is weaker than it looks
+- must not contain the account's email local-part
+- must not equal the account's name
+
+### Seeded logins
+
+The seed bypasses the policy, so the demo credentials still work but all sit
+below the new minimum. Change them before anyone real uses the site:
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | `admin@rominalimo.com` | `admin123` |
+| Passenger | `passenger@rominalimo.com` | `pass123` |
+| Driver | `alex@rominalimo.com` | `driver123` |
+| Driver | `maria@rominalimo.com` | `driver123` |
+| Driver | `omar@rominalimo.com` | `driver123` |
+
+```bash
+/usr/local/bin/set-admin-password.sh alex@rominalimo.com
+```
+
+### Email
+
+`SMTP_*` must be set for verification and password reset to work at all. Until
+then `sendMail` throws `MailNotConfigured`, `/api/settings` publishes
+`emailResetEnabled: false`, and the reset page says so rather than telling users
+to check an inbox that will never receive anything.
+
+SMTP failures are logged server-side and deliberately **not** surfaced per
+request. A 500 or 503 on `forgot-password` would distinguish a real address from
+an unknown one, which is exactly how the original account enumeration worked.
+The public settings flag warns every visitor at once without asking whether a
+given address exists.
+
+---
+
 ## Rollback
 
 ```bash
