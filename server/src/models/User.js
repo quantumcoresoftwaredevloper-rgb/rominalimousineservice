@@ -43,6 +43,10 @@ const userSchema = new mongoose.Schema(
     driverDetails: {
       vehicleType: {
         type: String,
+        // Retains the full marketing catalogue so existing data and imported
+        // records stay valid. Only 'SUV' and 'Chevrolet' are bookable and only
+        // those are assignable through admin — see
+        // adminUserService.VEHICLE_TYPES.
         enum: [
           'executive-sedan',
           'economy-sedan',
@@ -56,7 +60,11 @@ const userSchema = new mongoose.Schema(
           'school-bus',
           'motorcoach',
         ],
-        default: 'economy-sedan',
+        // Must default to a bookable class. It defaulted to 'economy-sedan',
+        // which no ride can request — a driver registered without an explicit
+        // vehicle (any API client, or the form with the toggle left unset) got
+        // a class dispatch could never match them on.
+        default: 'SUV',
       },
       plateNumber: { type: String, default: '' },
       licenseNo: { type: String, default: '' },
