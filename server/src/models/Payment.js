@@ -44,9 +44,20 @@ paymentSchema.index({ status: 1 });
 //
 // Must be created in production for the guarantee to hold — the unique flag
 // requires an index build.
+//
+// The name is explicit on purpose. Without it Mongo auto-names this
+// `ride_1`, which collided with the plain non-unique `ride_1` left behind by
+// the old `index: true` on the ride field. Mongoose's autoIndex then failed
+// the create silently and the double-charge guard was absent in production
+// while the code looked correct. Verify with:
+//   db.payments.getIndexes().filter(i => i.name === 'ride_settled_unique')
 paymentSchema.index(
   { ride: 1 },
-  { unique: true, partialFilterExpression: { status: { $in: ['succeeded', 'cash'] } } },
+  {
+    unique: true,
+    name: 'ride_settled_unique',
+    partialFilterExpression: { status: { $in: ['succeeded', 'cash'] } },
+  },
 );
 
 const Payment = mongoose.model('Payment', paymentSchema);
