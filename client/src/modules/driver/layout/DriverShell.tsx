@@ -31,9 +31,23 @@ export default function DriverShell() {
   const { data: profile } = useDriverProfile() as any;
   const driver = profile?.user || user;
   const online = !!driver?.driverDetails?.isAvailable;
+  const approved = driver?.isApproved !== false;
   const toggle = useToggleAvailability();
+
+  // An unapproved driver is refused with 403 DRIVER_NOT_APPROVED. That error
+  // used to go nowhere — no onError, no UI — so the switch simply sprang back
+  // and looked broken. Explain it instead, and point at the fix.
+  const dutyMessage = dutyError
+    || (toggle.error as any)?.response?.data?.message
+    || (toggle.error as any)?.message
+    || '';
+  const onToggleDuty = () => {
+    setDutyError('');
+    toggle.mutate(!online);
+  };
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [dutyError, setDutyError] = useState('');
   const navigate = useNavigate();
   const [dark, setDark] = useState(false);
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
@@ -54,9 +68,15 @@ export default function DriverShell() {
           <div className="relative mt-4 rounded-2xl border border-white/15 bg-white/10 p-3 backdrop-blur">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${online ? 'bg-gold-400 animate-pulse' : 'bg-white/40'}`} /><span className="text-xs font-semibold text-white">{online ? 'On duty' : 'Off duty'}</span></div>
-              <Switch checked={online} onChange={() => toggle.mutate(!online)} disabled={toggle.isPending} />
+              <Switch checked={online} onChange={onToggleDuty} disabled={toggle.isPending} />
             </div>
             <p className="mt-1 text-xs text-white/70">{online ? 'Receiving nearby requests' : 'Go online to receive rides'}</p>
+            {dutyMessage && (
+              <p role="alert" className="mt-2 rounded-lg bg-red-500/90 px-2.5 py-1.5 text-[11px] leading-snug text-white">
+                {dutyMessage}
+                {!approved && ' Ask dispatch to approve your driver account — email verification alone does not enable this.'}
+              </p>
+            )}
           </div>
         )}
       </div>
