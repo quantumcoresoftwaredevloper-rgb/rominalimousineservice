@@ -88,17 +88,18 @@ export default function RideTracking() {
 
   useEffect(() => {
     let cancelled = false;
+    let stopped = false;
 
     const load = async () => {
+      if (stopped) return;
       try {
         const { data } = await getRide(id);
-        if (cancelled) return;
+        if (cancelled || stopped) return;
         setRide(data.ride);
         joinRideRoom(id);
         setLoading(false);
 
         if (['completed', 'cancelled'].includes(data.ride.status)) stopPolling();
-        else timer.current = setInterval(load, 15000);
       } catch (err) {
         if (cancelled) return;
         setError(err.response?.data?.message || 'Could not load ride');
@@ -106,6 +107,16 @@ export default function RideTracking() {
       }
     };
     load();
+
+    // ONE interval for the life of this effect. Previously the reschedule was
+    // inside load(), so every poll created another interval and each of those
+    // created another: exponential growth. Observed on production, 20,288
+    // requests to a single ride in 44 minutes (~7.7/s) against a ride that was
+    // already cancelled. stopPolling() could only ever clear the newest
+    // handle, so every earlier interval leaked and kept firing after unmount.
+    // The per-IP API limiter then exhausted for everyone behind that address,
+    // which is what surfaced as "Too many requests" across the whole app.
+    timer.current = setInterval(load, 15000);
 
     onDriverFound(({ ride: updatedRide }) => {
       setRide(updatedRide);
@@ -118,6 +129,7 @@ export default function RideTracking() {
 
     return () => {
       cancelled = true;
+      stopped = true;
       stopPolling();
       offRideUpdate();
       offDriverLocation();
