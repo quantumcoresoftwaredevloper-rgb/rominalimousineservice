@@ -8,6 +8,7 @@ import { Server } from "socket.io";
 import { connectDB } from "./config/db.js";
 import { initSocket } from "./config/socket.js";
 import { notFound, errorHandler } from "./middleware/error.js";
+import { readCookies } from "./middleware/oauthCookies.js";
 
 import authRoutes from "./routes/auth.js";
 import rideRoutes from "./routes/rides.js";
@@ -60,6 +61,9 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "1mb" }));
+// Parses the Cookie header for the OAuth CSRF state. Hand-rolled rather than
+// cookie-parser — two cookies, and the attributes matter more than the parsing.
+app.use(readCookies);
 
 // Rate limiting — production hardening.
 const apiLimiter = rateLimit({

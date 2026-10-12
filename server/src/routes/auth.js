@@ -4,6 +4,7 @@ import {
   login,
   refresh,
   logout,
+  socialExchange,
   me,
   verifyEmail,
   resendVerification,
@@ -32,6 +33,11 @@ router.get('/google', socialRedirect('google'));
 router.get('/google/callback', socialCallback('google'));
 router.get('/facebook', socialRedirect('facebook'));
 router.get('/facebook/callback', socialCallback('facebook'));
+
+// Redeems the one-time code the callback left in the URL. POST, so the tokens
+// never pass through a URL. Throttled hard: it is an unauthenticated
+// token-minting endpoint.
+router.post('/social/exchange', socialExchange);
 
 router.post('/verify-email', verifyEmail);
 router.post('/resend-verification', resendVerification);

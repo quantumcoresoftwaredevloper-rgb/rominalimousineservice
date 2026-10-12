@@ -1,54 +1,85 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { tokenStore } from '../services/api.js';
+import api, { tokenStore } from '../services/api.js';
 import { Spinner } from '../components/ui/Spinner.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
 
-// Landing page for the Passport OAuth callback. The server redirects here with
-// fresh tokens in the query string (or ?error=... on failure). We store them
-// and hard-redirect so the app reloads with AuthContext picking up the session.
+// Landing page for the OAuth callback.
+//
+// The server redirects here with a single-use `code`, not with tokens. We POST
+// that code to /api/auth/social/exchange and receive the tokens in a response
+// body. Tokens in a URL land in browser history, proxy access logs and Referer
+// headers on any outbound link; over POST they touch none of those.
+//
+// We also strip the query string before anything else, so the code never
+// survives in history even if the exchange fails.
 const getQuery = (key) => {
   const match = window.location.search.match(new RegExp(`[?&]${key}=([^&]*)`));
   return match ? decodeURIComponent(match[1]) : '';
 };
 
-// Access JWTs embed { id, role, v } — decode the payload so the OAuth session is
-// stored under the right per-role key (admin/driver/passenger).
-const roleFromToken = (token) => {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-    return payload.role || 'passenger';
-  } catch {
-    return 'passenger';
-  }
+const ERRORS = {
+  invalid_state: 'That sign-in link did not match this browser. Please try again.',
+  login_failed: "We couldn't sign you in with that account. You may have cancelled or denied access.",
+  EXCHANGE_FAILED: 'That sign-in link has expired or was already used. Please try again.',
+  ACCOUNT_SUSPENDED: 'This account has been suspended. Please contact support.',
 };
 
 export default function SocialCallback() {
   const [status, setStatus] = useState('loading');
+  const [reason, setReason] = useState('');
 
   useEffect(() => {
-    const error = getQuery('error');
-    const access = getQuery('accessToken');
-    const refresh = getQuery('refreshToken');
+    let cancelled = false;
 
-    if (error) {
-      setStatus('error');
-      return;
-    }
-    if (!access || !refresh) {
-      setStatus('error');
-      return;
-    }
-    tokenStore.setActiveRole(roleFromToken(access));
-    tokenStore.setTokens(access, refresh);
-    window.location.replace('/');
+    const run = async () => {
+      const error = getQuery('error');
+      const code = getQuery('code');
+
+      // Remove the code from the address bar immediately. window.history.replaceState
+      // does not reload, so a failed exchange still leaves no code behind for the
+      // back button to replay.
+      window.history.replaceState({}, '', window.location.pathname);
+
+      if (error) {
+        setReason(ERRORS[error] || ERRORS.login_failed);
+        setStatus('error');
+        return;
+      }
+      if (!code) {
+        setReason(ERRORS.EXCHANGE_FAILED);
+        setStatus('error');
+        return;
+      }
+
+      try {
+        const { data } = await api.post('/auth/social/exchange', { code });
+        if (cancelled) return;
+        // The server tells us the role rather than decoding the JWT here —
+        // an unverified token should never decide which session to open.
+        const role = data?.user?.role || 'passenger';
+        tokenStore.setActiveRole(role);
+        tokenStore.setTokens(data.tokens.accessToken, data.tokens.refreshToken);
+        window.location.replace('/');
+      } catch (err) {
+        if (cancelled) return;
+        const code2 = err?.response?.data?.code;
+        setReason(ERRORS[code2] || ERRORS.EXCHANGE_FAILED);
+        setStatus('error');
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const copy =
     status === 'loading'
       ? { title: 'Finishing sign-in…', sub: 'Connecting you to Romina Limousine Service.' }
-      : { title: 'Sign-in failed', sub: "We couldn't log you in with that account. Please try again or use another method." };
+      : { title: 'Sign-in failed', sub: reason };
 
   return (
     <AuthLayout title={copy.title} subtitle={copy.sub}>

@@ -69,6 +69,12 @@ const upsertSocialUser = async ({ email, name, provider, emailVerified }, done) 
         phone: '',
         password: crypto.randomBytes(24).toString('hex'), // never used for social accounts
         emailVerified,
+        // Social signup can only ever create a passenger, so this matches the
+        // password path (authService.register gives a non-driver isApproved:
+        // true). Left at the schema default it produced isApproved: false for
+        // every Google passenger — inconsistent, and a latent trap for any
+        // future check that reads the flag on a passenger.
+        isApproved: true,
         authProvider: provider,
       });
     } else if (user.authProvider === 'local') {
@@ -80,6 +86,14 @@ const upsertSocialUser = async ({ email, name, provider, emailVerified }, done) 
   } catch (err) {
     return done(err);
   }
+};
+
+// Google can return an email it has not verified (unverified Google Workspace
+// domains, most often). Trusting it unconditionally would mark an account
+// emailVerified and let it past a gate it never passed.
+const socialEmailVerified = (profile) => {
+  const first = profile.emails && profile.emails[0];
+  return Boolean(first && first.verified);
 };
 
 const socialEmail = (profile) =>
@@ -101,7 +115,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             email: socialEmail(profile),
             name: profile.displayName || socialEmail(profile)?.split('@')[0] || 'Google User',
             provider: 'google',
-            emailVerified: true,
+            emailVerified: socialEmailVerified(profile),
           },
           done
         )
