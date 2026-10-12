@@ -147,10 +147,51 @@ For the workflow's build step:
 | `VITE_STRIPE_PUBLISHABLE_KEY` | `pk_test_…` (publishable only — never the secret key) |
 | `VITE_GOOGLE_CLIENT_ID` | the OAuth client id |
 
-### 5. Google OAuth redirect
+### 5. Google OAuth — console setup
 
-The OAuth client's authorized redirect URI must be
-`https://rominalimousineservice.com/api/auth/google/callback`.
+Server side (`/home/deploy/api-romina/.env`) is already configured with
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. The callback URL is derived from
+`APP_URL`, so it resolves to
+`https://rominalimousineservice.com/api/auth/google/callback` — which is correct
+here because the SPA and API are same-origin and nginx proxies `/api`.
+
+In the Google Cloud console:
+
+1. **APIs & Services → Credentials** → the OAuth client →
+   **Authorized redirect URIs** →
+   `https://rominalimousineservice.com/api/auth/google/callback`
+2. **OAuth consent screen → Publish app** to production. While it stays in
+   *Testing*, only accounts listed under **Test users** can sign in — every
+   other driver silently fails at the consent screen. An unverified app shows a
+   Google warning screen; that is expected and normal for a service this size.
+3. Add the application home page and privacy policy URLs under **Branding**, or
+   Google shows a "unverified app" screen with a warning.
+
+**The button stays inert until the build knows about it.** `VITE_GOOGLE_CLIENT_ID`
+is a build-time secret; without it `SocialLoginButtons` renders a disabled button
+and issues no request. Setting the server env alone is not enough — push a commit
+after adding the repository secret.
+
+### How the handshake works
+
+```
+GET  /api/auth/google              -> 302 to Google, sets rt_oauth_state cookie (httpOnly, Lax, Secure)
+GET  /api/auth/google/callback     -> verifies state, mints a single-use code (60s), 302 /auth/social?code=…
+POST /api/auth/social/exchange     -> consumes the code, returns tokens in the response BODY
+```
+
+**No token ever appears in a URL.** They would land in browser history, nginx
+access logs and `Referer` headers on any outbound link. The code is 256 bits of
+entropy, single-use, and expires in 60 seconds.
+
+Codes are held in process memory. That is correct only while PM2 runs a single
+instance — which Socket.io's per-process rooms require anyway. Moving to
+multiple workers requires moving the store to `REDIS_URL`, or exchanges will
+intermittently fail with "expired or already used".
+
+`rt_oauth_state` is `SameSite=Lax`, not `Strict`: Google returns the user via a
+cross-origin top-level GET, and `Strict` would withhold the cookie on exactly
+that request, breaking every sign-in.
 
 ---
 
