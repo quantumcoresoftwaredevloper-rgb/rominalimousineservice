@@ -238,6 +238,73 @@ curl -s https://api.ellicottcityairporttaxi.com/api/health   # {"status":"ok"}
 
 ---
 
+## Backups and monitoring
+
+Both are the operator's job now that the database lives on a box you rent.
+
+### Database backups
+
+```bash
+/usr/local/bin/backup-mongo.sh          # manual run
+```
+
+Nightly at **04:23 UTC** via cronie (this box uses `crond`, not Debian's `cron` —
+`systemctl status cron` reports "not found" and is misleading here; use
+`systemctl status cronie`).
+
+Dumps `ridetaxi` and `ellicottaxi` to `/home/deploy/backups`, keeps 14 days, and
+pushes a copy to the InterServer shared host. Log: `/var/log/mongo-backup.log`.
+
+**The script restores every archive it writes, into a scratch database, and
+compares collection counts against the live one.** That is not decoration — the
+first attempt at this reported `0 document(s) restored` and exited 0, because
+`mongodump --db X` writes the real namespace into the archive and
+`mongorestore` needs `--nsFrom`/`--nsTo` to redirect it. A 1.9 MB file that
+restores nothing looks identical to a working backup until you need it.
+
+```bash
+# manual restore
+mongorestore --db ridetaxi --archive=/home/deploy/backups/ridetaxi-<stamp>.archive.gz   --gzip --drop --nsFrom='ridetaxi.*' --nsTo='ridetaxi.*'
+```
+
+**Offsite is not configured yet** — the script logs a warning nightly until a key
+is installed on the shared host, rather than pretending to succeed.
+
+### Certificate watchdog
+
+```bash
+/usr/local/bin/check-cert-expiry.sh      # daily 09:07
+```
+
+Warns loudly when any certificate drops under 30 days. Log:
+`/var/log/cert-expiry.log`. Lets Encrypt renews twice daily on its own; this
+exists because **automated renewal has been failing intermittently with
+Lets Encrypt-side DNS errors** ("networking error looking up A" during secondary
+validation). It affects the other site's certificates identically, which is how
+it is known to be upstream rather than a configuration fault here.
+
+### Uptime
+
+There is **no external uptime monitor**. If the box dies nobody is told until a
+customer complains. A free HTTP check on `https://rominalimousineservice.com/api/health`
+every five minutes is worth adding.
+
+### Rate limits
+
+Values are per-IP and were raised during deployment work. `RATE_LIMIT_LOGIN` in
+particular will lock an IP out after 20 attempts in 15 minutes — which is correct
+for production and will trip a test suite that logs in repeatedly.
+
+| Variable | Current | Note |
+|---|---|---|
+| `RATE_LIMIT_API` | 3000 | per 15 min |
+| `RATE_LIMIT_AUTH` | 100 | per 15 min |
+| `RATE_LIMIT_LOGIN` | 20 | per 15 min — brute-force defence |
+| `RATE_LIMIT_EMAIL_LINK` | 5 | forgot-password, resend-verification |
+| `RATE_LIMIT_REDEEM` | 30 | reset-password, verify-email |
+
+---
+
 ## Accounts and credentials
 
 ### Admin password
