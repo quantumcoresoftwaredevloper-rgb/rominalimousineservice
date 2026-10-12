@@ -5,14 +5,18 @@ import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Modal } from '../../components/ui/Modal';
 
-const VEHICLE_TYPES = ['executive-sedan','economy-sedan','economy-suv','premium-suv','luxury-suv','van','mini-coach','school-bus','motorcoach'];
+// Driver vehicle types — must match BOOKING_VEHICLES in src/data/vehicles.js
+// and VEHICLE_TYPES in server/src/services/adminUserService.js. Booking offers
+// only these two and ride matching compares vehicleType exactly, so offering
+// any other class here would create drivers dispatch can never reach.
+const VEHICLE_TYPES = ['SUV', 'Chevrolet'] as const;
 
 const INPUT = 'input-pill w-full border border-accent-200 bg-white px-3 py-2 text-sm outline-none dark:border-accent-700 dark:bg-accent-800 dark:text-white';
 
 const emptyForm = (role: 'passenger' | 'driver') => ({
   name: '', email: '', phone: '', password: '',
-  role, emailVerified: true, isSuspended: false,
-  driverDetails: { vehicleType: 'economy-sedan', plateNumber: '', licenseNo: '', isAvailable: true },
+  role, emailVerified: true, isSuspended: false, isApproved: role !== 'driver',
+  driverDetails: { vehicleType: 'SUV', plateNumber: '', licenseNo: '', isAvailable: false },
 });
 
 export default function UserManager({ role }: { role: 'passenger' | 'driver' }) {
@@ -41,7 +45,7 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
     mutationFn: async () => {
       const body: any = { ...form };
       if (!editing) delete body.isSuspended;
-      if (body.role !== 'driver') delete body.driverDetails;
+      if (body.role !== 'driver') { delete body.driverDetails; delete body.isApproved; }
       if (!body.password) delete body.password;
       if (editing) await api.patch(`/crm/users/${editing._id}`, body);
       else await api.post('/crm/users', body);
@@ -82,8 +86,14 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
     setForm({
       name: u.name, email: u.email, phone: u.phone || '', password: '',
       role: u.role, emailVerified: !!u.emailVerified, isSuspended: !!u.isSuspended,
+      // Drivers register unapproved and nothing in this form could approve
+      // them, so an admin had to find the legacy dashboard to unblock a
+      // driver. Hydrated here so the checkbox reflects reality.
+      isApproved: !!u.isApproved,
       driverDetails: {
-        vehicleType: u.driverDetails?.vehicleType || 'economy-sedan',
+        vehicleType: VEHICLE_TYPES.includes(u.driverDetails?.vehicleType)
+          ? u.driverDetails.vehicleType
+          : VEHICLE_TYPES[0],
         plateNumber: u.driverDetails?.plateNumber || '',
         licenseNo: u.driverDetails?.licenseNo || '',
         isAvailable: !!u.driverDetails?.isAvailable,
@@ -240,6 +250,13 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
         {(form.role === 'driver') && (
           <div className="mt-4 rounded-2xl bg-accent-50 p-4 dark:bg-white/5">
             <p className="text-sm font-semibold">Driver details</p>
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={!!form.isApproved} onChange={(e) => set({ isApproved: e.target.checked })} className="mt-0.5 h-4 w-4" />
+              <span>
+                Approved to drive
+                <span className="block text-xs text-muted">Required before the driver can go on duty or accept rides. Verifying the email is separate and does not enable this.</span>
+              </span>
+            </label>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <label className="text-sm">Vehicle type
                 <select value={form.driverDetails.vehicleType} onChange={(e) => setDD({ vehicleType: e.target.value })} className={`${INPUT} mt-1`}>
@@ -253,9 +270,12 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
                 <input value={form.driverDetails.licenseNo} onChange={(e) => setDD({ licenseNo: e.target.value })} className={`${INPUT} mt-1`} />
               </label>
               <label className="flex items-center gap-2 pt-5 text-sm">
-                <input type="checkbox" checked={!!form.driverDetails.isAvailable} onChange={(e) => setDD({ isAvailable: e.target.checked })} className="h-4 w-4" /> Available (online)
+                <input type="checkbox" checked={!!form.driverDetails.isAvailable} disabled={!form.isApproved} onChange={(e) => setDD({ isAvailable: e.target.checked })} className="h-4 w-4 disabled:opacity-50" /> Available (online)
               </label>
             </div>
+            {!form.isApproved && (
+              <p className="mt-3 text-xs text-amber-700">Not approved — the driver stays offline and receives no rides, whatever is ticked here.</p>
+            )}
           </div>
         )}
       </Modal>

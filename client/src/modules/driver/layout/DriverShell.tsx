@@ -37,8 +37,12 @@ export default function DriverShell() {
 
   const { data: profile } = useDriverProfile() as any;
   const driver = profile?.user || user;
-  const online = !!driver?.driverDetails?.isAvailable;
   const approved = driver?.isApproved !== false;
+  // An unapproved driver cannot perform any driver-only action, so they must
+  // not be shown as live. Reading isAvailable on its own made an unapproved
+  // driver display "On duty / Receiving nearby requests" while every request
+  // returned 403 — a contradiction the driver could not act on.
+  const online = approved && !!driver?.driverDetails?.isAvailable;
   const toggle = useToggleAvailability();
 
   // An unapproved driver is refused with 403 DRIVER_NOT_APPROVED. That error
@@ -68,10 +72,10 @@ export default function DriverShell() {
         {!collapsed && (
           <div className="relative mt-4 rounded-2xl border border-white/15 bg-white/10 p-3 backdrop-blur">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${online ? 'bg-gold-400 animate-pulse' : 'bg-white/40'}`} /><span className="text-xs font-semibold text-white">{online ? 'On duty' : 'Off duty'}</span></div>
-              <Switch checked={online} onChange={onToggleDuty} disabled={toggle.isPending} />
+              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${online ? 'bg-gold-400 animate-pulse' : 'bg-white/40'}`} /><span className="text-xs font-semibold text-white">{!approved ? 'Awaiting approval' : online ? 'On duty' : 'Off duty'}</span></div>
+              <Switch checked={online} onChange={onToggleDuty} disabled={toggle.isPending || !approved} />
             </div>
-            <p className="mt-1 text-xs text-white/70">{online ? 'Receiving nearby requests' : 'Go online to receive rides'}</p>
+            <p className="mt-1 text-xs text-white/70">{!approved ? 'You cannot go on duty until approved' : online ? 'Receiving nearby requests' : 'Go online to receive rides'}</p>
             {dutyMessage && (
               <p role="alert" className="mt-2 rounded-lg bg-red-500/90 px-2.5 py-1.5 text-[11px] leading-snug text-white">
                 {dutyMessage}

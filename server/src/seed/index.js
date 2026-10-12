@@ -33,7 +33,11 @@ const users = [
     emailVerified: true,
     isApproved: true,
     driverDetails: {
-      vehicleType: 'executive-sedan',
+      // Must be a bookable class (SUV | Chevrolet). alex was seeded as
+      // 'executive-sedan', which no ride can ever request — bookings only offer
+      // SUV and Chevrolet and matching compares vehicleType exactly — so he was
+      // permanently invisible to dispatch and never saw a single request.
+      vehicleType: 'SUV',
       plateNumber: 'ABC-123',
       licenseNo: 'DL-88213',
       isAvailable: true,

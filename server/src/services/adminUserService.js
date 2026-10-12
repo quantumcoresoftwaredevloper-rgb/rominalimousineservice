@@ -10,17 +10,17 @@ const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Admin can only manage passenger/driver accounts — staff & admins are protected.
 export const MANAGED_ROLES = ['passenger', 'driver'];
-export const VEHICLE_TYPES = [
-  'executive-sedan',
-  'economy-sedan',
-  'economy-suv',
-  'premium-suv',
-  'luxury-suv',
-  'van',
-  'mini-coach',
-  'school-bus',
-  'motorcoach',
-];
+// Driver vehicle types. Only these two are bookable (see BOOKING_VEHICLES in
+// client/src/data/vehicles.js) and ride matching compares vehicleType exactly,
+// so a driver on anything else is invisible to dispatch and can never be
+// assigned a ride.
+//
+// 'SUV' and 'Chevrolet' were missing from this list even though they are the
+// only two values the registration and booking forms offer, and they are legal
+// on both User and Ride. pickVehicle then silently discarded them — no error,
+// the field just reverted — so an admin editing a registered driver silently
+// wiped their vehicle class.
+export const VEHICLE_TYPES = ['SUV', 'Chevrolet'];
 
 const pickVehicle = (v) => (VEHICLE_TYPES.includes(v) ? v : undefined);
 const isStaff = (role) => !MANAGED_ROLES.includes(role);
@@ -103,6 +103,15 @@ export const updateUser = async (userId, body = {}) => {
   }
   if (body.emailVerified !== undefined) user.emailVerified = body.emailVerified === true;
   if (body.isSuspended !== undefined) user.isSuspended = body.isSuspended === true;
+  // Driver approval. requireApprovedDriver gates every driver-only action on
+  // this, and matching only considers isApproved drivers, so an unapproved
+  // driver is invisible to dispatch. It was not settable here at all — the only
+  // way to set it was PATCH /api/admin/drivers/:id/approve, which the CRM admin
+  // UI never called. Admin could tick "Email verified" and "Available" and the
+  // driver still could not go online.
+  if (body.isApproved !== undefined && user.role === 'driver') {
+    user.isApproved = body.isApproved === true;
+  }
 
   const dd = body.driverDetails;
   if (dd && typeof dd === 'object') {
@@ -112,6 +121,14 @@ export const updateUser = async (userId, body = {}) => {
     if (dd.plateNumber !== undefined) user.driverDetails.plateNumber = String(dd.plateNumber).trim();
     if (dd.licenseNo !== undefined) user.driverDetails.licenseNo = String(dd.licenseNo).trim();
     if (dd.isAvailable !== undefined) user.driverDetails.isAvailable = dd.isAvailable === true;
+  }
+
+  // Applied last so an "Available" tick in the same request cannot re-enable a
+  // driver that is not approved. driverDetails.isAvailable is what renders
+  // "On duty / Receiving nearby requests", so leaving it true makes an
+  // unapproved driver look live while every action returns 403.
+  if (user.role === 'driver' && !user.isApproved) {
+    user.driverDetails.isAvailable = false;
   }
 
   await user.save();
