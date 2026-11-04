@@ -23,7 +23,7 @@ const pickVehicle = (v) => (VEHICLE_TYPES.includes(v) ? v : undefined);
 const isStaff = (role) => !MANAGED_ROLES.includes(role);
 
 const sanitizeDriverDetails = (dd = {}) => ({
-  vehicleType: pickVehicle(dd.vehicleType) || 'economy-sedan',
+  vehicleType: pickVehicle(dd.vehicleType) || 'SUV',
   plateNumber: String(dd.plateNumber ?? '').trim(),
   licenseNo: String(dd.licenseNo ?? '').trim(),
   isAvailable: dd.isAvailable === true,

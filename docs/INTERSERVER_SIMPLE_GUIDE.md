@@ -127,7 +127,9 @@ SMTP_FROM=<your gmail>
 
 ```bash
 cd ~/ridetaxi/client && npm install && npm run build
-cd ../server && npm install && npm run seed
+cd ../server && npm install && npm run db:indexes && npm run db:audit-vehicles
+# Create the first admin (never run `npm run seed` against production data):
+ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-unique-password' npm run admin:create
 
 mkdir -p ~/ridetaxi/server/logs
 cd ~/ridetaxi

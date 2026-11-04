@@ -16,7 +16,7 @@ const STATS = [
   { value: '24/7', label: 'Concierge dispatch, every day' },
   { value: 'Curbside', label: 'Staging at BWI' },
   { value: '3', label: 'Major airports served' },
-  { value: '5.0', label: 'Passenger rating' },
+  { value: 'DMV', label: 'MD · VA · Washington DC' },
 ];
 
 const TRUST = [
@@ -41,9 +41,9 @@ const FEATURES = [
   },
   {
     icon: Plane,
-    title: 'Flight Tracking',
-    desc: 'We monitor your flight matrix in real time and adjust gate pickup windows automatically. No charges for delays.',
-    points: ['Real-time flight monitoring', 'Automatic gate adjustment', 'No penalty for late arrivals', 'Complete travel peace of mind'],
+    title: 'Flight-Aware Dispatch',
+    desc: 'Add your flight number when you reserve and dispatch can coordinate around your arrival. Live automatic flight tracking is not enabled on this platform.',
+    points: ['Flight details captured at booking', 'Dispatch reviews arrival timing', 'Call us for delays or changes', 'Clear, fixed-rate pricing'],
   },
   {
     icon: CarFront,
@@ -110,7 +110,7 @@ const AMENITIES = [
 
 const STEPS = [
   { n: '01', t: 'Book your ride', d: 'Reserve online in seconds and see your flat, fixed rate upfront — zero surge, zero hidden fees. Pre-booking secures a dedicated chauffeur.' },
-  { n: '02', t: 'Your chauffeur arrives', d: 'Synchronized fleet staging gets you a curbside meet at BWI the moment you land. Your driver monitors flights in real time, so delays never cost you.' },
+  { n: '02', t: 'Your chauffeur arrives', d: 'Synchronized fleet staging gets you a curbside meet at BWI the moment you land. Add your flight number at booking so dispatch can coordinate around your arrival.' },
   { n: '03', t: 'Track & ride', d: 'Follow your chauffeur live on the map, share the trip with loved ones, and rate your ride when it ends.' },
 ];
 
@@ -285,15 +285,15 @@ export default function Home() {
             <p className="mt-4 text-base leading-relaxed text-muted">
               Avoid the uncertainty and long lines of rideshares or taxi queues. Our meticulously
               maintained black-car solutions transition you from terminal to destination safely,
-              privately and strictly on schedule — with a dedicated premium chauffeur trained to
-              monitor your flight status in real time.
+              privately and strictly on schedule — with a dedicated premium chauffeur and your
+              flight details captured at booking for dispatch coordination.
             </p>
             <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-800">
               <Check className="h-4 w-4" />
               We also provide Ladies Driver
             </div>
             <ul className="mt-6 space-y-3">
-              {['Comprehensive background-checked drivers', 'Fixed rate pricing with zero surge', 'Real-time flight tracking, no delay penalties', 'On-time curbside arrival guarantee'].map((item) => (
+              {['Comprehensive background-checked drivers', 'Fixed rate pricing with zero surge', 'Flight number captured for dispatch coordination', 'On-time curbside arrival commitment'].map((item) => (
                 <li key={item} className="flex items-start gap-3 text-sm font-medium text-ink">
                   <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-accent-100 text-accent-700">
                     <Check className="h-3 w-3" />

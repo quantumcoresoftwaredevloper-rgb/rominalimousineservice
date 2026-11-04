@@ -177,8 +177,24 @@ cd client && npm run lint       # ESLint
 # Backend
 cd server && npm run dev        # Start with nodemon
 cd server && npm run start      # Production
-cd server && npm run seed       # Seed test data
+cd server && npm run seed       # Seed demo data (refuses in production)
+cd server && npm run lint       # ESLint
+cd server && npm test           # node:test unit suite (pricing, roles, payment policy)
+cd server && npm run db:indexes # Sync schema indexes after deploying index changes
+cd server && npm run admin:create # Create/promote one admin without wiping data
+cd server && npm run db:audit-vehicles # Report drivers on non-bookable vehicle classes
 ```
+
+> **Driver vehicle audit:** after importing/upgrading existing data run
+> `npm run db:audit-vehicles`. Any driver not on `SUV` or `Chevrolet` cannot be
+> assigned a ride. Repair with `npm run db:audit-vehicles -- --fix=SUV` (or edit
+> each driver under Admin → Drivers).
+
+> **Index migration:** `npm run db:indexes` builds the active-ride/driver guard
+> (`rides.driver_active_ride_unique`) and one-settled-payment-per-ride guard
+> (`payments.ride_settled_unique`). Run it after deploy and before allowing
+> real bookings. If it fails, find the duplicate active ride or double payment
+> it reports; do not disable the index.
 
 ## Data Models
 
@@ -186,7 +202,7 @@ cd server && npm run seed       # Seed test data
 ```js
 {
   _id, name, email, phone, password: (hashed),
-  role: "passenger" | "driver" | "admin",
+  role: "passenger" | "driver" | "admin" | "super_admin" | "dispatcher" | "manager" | "finance" | "support",
   avatar, createdAt, updatedAt,          // avatar = base64 data-URL (no external storage)
   emailVerified: Boolean,                // default false
   isSuspended: Boolean,                  // default false — protect + login reject suspended users
@@ -195,16 +211,25 @@ cd server && npm run seed       # Seed test data
   tokenVersion: Number,                  // bumped on logout / password reset to revoke JWTs
   verificationToken: { token, expiresAt } | null,  // hashed, 24h
   resetToken: { token, expiresAt } | null,          // hashed, 1h
+  isApproved: Boolean,                   // drivers must be approved before going on duty
   driverDetails: {
-    vehicleType: "executive-sedan" | "economy-sedan" | "economy-suv" | "premium-suv" | "luxury-suv" | "van" | "mini-coach" | "school-bus" | "motorcoach",
-    plateNumber, licenseNo, isAvailable: Boolean
+    // Catalogue retains legacy ids, but only SUV and Chevrolet are bookable
+    // and assignable. Default for new drivers is SUV.
+    vehicleType: "SUV" | "Chevrolet" | (legacy catalogue ids),
+    plateNumber, licenseNo, isAvailable: Boolean,
+    stats: { rating, ratingCount, compliments }
   }
 }
 ```
 Statics: `findByEmail` / `findByPhone` / `findByLogin` (email-or-phone regex autodetect, all `.select('+password')`).
 
+Public registration may only create `passenger` or `driver`. Staff roles
+(`super_admin`, `dispatcher`, `manager`, `finance`, `support`) are seed/DB-only
+and use the permission matrix in `server/src/utils/roles.js`.
+
 Fleet ids are shared via `client/src/data/vehicles.js` (`VEHICLES` + `vehicleLabel` helper) and must
-match the enum above — same ids are used for driver matching and fares.
+match the enum above — same ids are used for driver matching and fares. `BOOKING_VEHICLES` is the
+authoritative bookable set: `SUV`, `Chevrolet`.
 
 ### Ride
 ```js
@@ -214,16 +239,23 @@ match the enum above — same ids are used for driver matching and fares.
   driver: ref(User) | null,
   pickup: { address, lat, lng },
   dropoff: { address, lat, lng },
-  vehicleType,                    // one of the 9 fleet ids above
+  vehicleType,                    // bookable: "SUV" | "Chevrolet"
   serviceType,                    // one of the 10 service slugs (data/services.js): airport, corporate, wedding, prom, shuttle, charter, night-out, funeral, school, valet
-  passengerCount, bags,
-  status: "pending" | "accepted" | "arriving" | "in_progress" | "completed" | "cancelled",
+  passengerCount, bags, notes,
+  flightNumber, airline, airport, // captured for airport bookings (optional tracking)
+  scheduledAt: Date | null,       // null = immediate; future = reservation
+  status: "scheduled" | "pending" | "accepted" | "arriving" | "in_progress" | "completed" | "cancelled" | "no_show" | "refunded",
   fare: { estimated, final, currency, distanceKm, durationMin },
   route: [{ lat, lng }],           // Polyline from OSRM
-  timestamps: { requested, accepted, arrived, started, completed },
+  timestamps: { requested, accepted, arrived, started, completed, cancelled, noShow },
   payment: { method, status, transactionId }
 }
 ```
+**Scheduling:** immediate bookings are `scheduledAt:null` + `pending`. Reservations require
+30 minutes to 180 days lead time, persist as `scheduled`, and are promoted automatically about
+30 minutes before pickup (60s sweep) to either `accepted` (driver pre-assigned) or `pending`.
+The driver's acceptance and all status transitions are atomic/ordered
+(`accepted → arriving → in_progress → completed`).
 
 ### Location (driver positions)
 ```js
@@ -265,18 +297,26 @@ match the enum above — same ids are used for driver matching and fares.
   amount, currency,
   method: "card" | "wallet" | "cash",
   provider: "stripe" | "sandbox" | "cash",
-  status: "pending" | "succeeded" | "failed" | "refunded" | "cash",
+  status: "pending" | "succeeded" | "failed" | "refunded" | "refunding" | "cash_due" | "cash_collected" | "cash",
   transactionId,                  // unique + sparse; pi_… for Stripe, txn_… for sandbox
   idempotencyKey,                 // unique + sparse — caller key prevents double-charge
   failureReason, cardLast4,
+  cashDueAt, cashCollectedAt, cashCollectedBy,
   refundedAt, refundTransactionId,
   createdAt, updatedAt
 }
 ```
-**Cash**: `POST pay` with `{ method: "cash" }` records a no-charge payment (status
-`cash`, provider `cash`); the passenger pays the driver at trip end. Never
-refundable, allowed even when `paymentsEnabled=false`. Once a ride is settled
-(either `succeeded` or `cash`) it is returned as-is — never charged again.
+Unique partial guards: `ride_settled_unique` (one settled payment per ride) and
+`driver_active_ride_unique` on Ride (one active ride per driver). Both are built
+by `npm run db:indexes`.
+
+**Cash**: `POST pay` with `{ method: "cash" }` records a `cash_due` payment
+(provider `cash`) and the passenger pays the driver at trip end. The assigned
+driver then calls `POST /api/rides/:rideId/collect-cash` (or
+`/api/payments/:id/collect-cash`), moving it to `cash_collected`. Cash is never
+marked paid up front and is never refundable online. Allowed even when
+`paymentsEnabled=false`. Once a ride is settled (`succeeded`, `cash_due`,
+`cash_collected`, or legacy `cash`) it is returned as-is — never charged again.
 
 **Stripe (online card)**: when `STRIPE_SECRET_KEY` is set in `server/.env`,
 card payments go through real Stripe Payment Intents. Flow:
@@ -293,7 +333,14 @@ Domain id in `server/.env` is informational (dashboard config); do NOT pass it a
 
 **Sandbox (fallback)**: when `STRIPE_SECRET_KEY` is unset, card payments use the
 simulated gateway — card ending `0002` always declines, `0000` always succeeds,
-otherwise ~95% success. Stripe is preferred once configured.
+otherwise ~95% success. Stripe is preferred once configured. **The simulator is
+development/test only**: with `NODE_ENV=production` and no Stripe key, card
+payments fail closed with 503 and sandbox refunds are refused. Cash still works.
+
+**Webhook**: set `STRIPE_WEBHOOK_SECRET` and point Stripe at
+`POST /api/webhooks/stripe`. The route is mounted with a raw body before the JSON
+parser, verifies the signature, and reconciles `payment_intent.succeeded` /
+`charge.refunded`. Without the secret it returns 503 (fails closed).
 
 ### Notification (in-app)
 ```js
@@ -349,6 +396,10 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
   Stripe charge. Idempotent (see Payment model).
 - `POST /api/rides/:rideId/payment-intent` - Stripe PaymentIntent `{ clientSecret, amount }`
   for the card tab of the pay modal (idempotent per ride).
+- `POST /api/rides/:rideId/collect-cash` - Assigned driver records cash received.
+- `POST /api/webhooks/stripe` - Stripe webhook (raw body, signature verified;
+  handles `payment_intent.succeeded` and `charge.refunded`). Requires
+  `STRIPE_WEBHOOK_SECRET`; fails closed otherwise.
 
 ### Users / Profile
 - `GET /api/users/me` - Profile (name, email, phone, avatar, role)
@@ -361,7 +412,9 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
 - `POST /api/rides/:rideId/pay` - Settle a ride (see Rides above: cash or Stripe card)
 - `GET /api/payments` - User's payments (with ride ref)
 - `GET /api/payments/:id` - Payment detail
-- `POST /api/payments/:id/refund` - Refund a succeeded payment (payer or admin); cash payments are rejected
+- `POST /api/payments/:id/collect-cash` - Assigned driver records cash received
+- `POST /api/payments/:id/request-refund` - Passenger refund request (no direct refund)
+- `POST /api/payments/:id/refund` - Staff refund of a succeeded payment (finance/admin); cash is rejected
 
 ### Notifications
 - `GET /api/notifications` - User's notifications (50 newest)
@@ -373,7 +426,13 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
 ### Drivers
 - `GET /api/drivers/nearby?lat=&lng=&radius=&vehicleType=` - Find nearby drivers (returns driver + live coords)
 - `GET /api/drivers/:id/eta?toLat=&toLng=` - Route + ETA from driver's last position (returns `distanceKm`, `durationMin`, `route` polyline, `from`)
-- `PATCH /api/drivers/availability` - Toggle on/off duty
+- `PATCH /api/drivers/availability` - Toggle on/off duty (approved drivers only)
+- `GET /api/drivers/stats` - Real driver KPIs, cash/card breakdown, 7-day series
+
+### Flights (optional)
+- `GET /api/flights/status` - `{ configured: boolean }`
+- `GET /api/flights/:ident` - FlightAware AeroAPI status lookup. Returns 503 when
+  `FLIGHTAWARE_API_KEY` is unset; never fabricates flight data.
 
 ### Places
 - `GET /api/places/search?q=` - Address autocomplete (Nominatim) for `LocationSearch`
@@ -388,7 +447,7 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
 - `GET /api/admin/analytics` - Dashboard stats
 - `GET /api/admin/users?search=&role=&page=&limit=` - User list (search name/email/phone)
 - `PATCH /api/admin/users/:id/suspend` / `PATCH /api/admin/users/:id/unsuspend` - Suspend/restore (kills active sessions)
-- `DELETE /api/admin/users/:id` - Permanently delete a user + their rides/payments/locations (admins protected)
+- `DELETE /api/admin/users/:id` - Delete a user: anonymizes passenger PII, cancels their active rides, removes locations/sessions/tokens; staff accounts are protected
 - `GET /api/admin/payments?status=&page=&limit=` - Payment reports + status summary
 - `GET /api/admin/settings` / `PATCH /api/admin/settings` - App settings (fares, toggles, support info)
 
@@ -398,12 +457,12 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
 - **Socket auth is JWT-only.** Pass `{ token }` (access JWT) via `socket.auth` on connect, or `authenticate` `{ token }` to re-auth mid-connection. The legacy `{ userId, role }` trust fallback was **removed** — claiming a user id without a token gets you an anonymous socket that can never join `user:`/`ride:` rooms or emit locations. Drivers join the `drivers` room, admins the `admins` room.
 - `authenticate` `{ token }` - Re-auth while connected: joins `user:{id}` room (drivers also `drivers`; admins `admins`)
 - `ride:join` `{ rideId }` - Join `ride:{rideId}` room. **Authorized only for the ride's passenger, its assigned driver, or admins** (locations flow through these rooms — unauthenticated joins are rejected).
-- `driver:location` `{ lat, lng, heading, speed }` - Driver position. **Server looks up the driver's active ride and forwards to `ride:{id}` room only.** Do NOT broadcast to all drivers/passengers.
+- `driver:location` `{ lat, lng, heading, speed }` - Driver position. The server **persists the sample to `Location`** (powering nearby-driver search) and forwards it only to the driver's active `ride:{id}` room. The driver portal publishes from `DriverShell` at 1 update / 2 s while on duty or on an active trip. Do NOT broadcast to all drivers/passengers.
 - `passenger:location` `{ lat, lng, heading, speed }` - Passenger position. Mirror of `driver:location` — forwarded to the passenger's active `ride:{id}` room so the assigned driver sees them live.
 - `ride:cancel` `{ rideId }` - Cancel ride (server re-validates)
 
 ### Server → Client
-- `ride:update` `{ ride, status }` - Ride status changed (ride room; admins also receive via `admins` room for live dispatch UI)
+- `ride:update` `{ ride, status }` - Ride status changed (ride room; live-dispatch roles — admin, super_admin, dispatcher, manager — also receive via the `admins` room for the dispatch UI)
 - `ride:new` `{ ride }` - New pending ride → **only the nearby, available drivers whose vehicle matches** (per-driver `user:{id}` rooms; the ride's passenger + admin also see it via `notification:new`). Used for the driver feed.
 - `ride:driverFound` `{ driver, ride }` - Driver assigned (via REST accept → socket)
 - `ride:completed` `{ ride, fare }` - Fare final
@@ -414,7 +473,7 @@ Known keys (defaults in `settingsService.DEFAULTS`): `baseFare`, `perKm`,
 ## Seed Credentials
 
 ```bash
-cd server && npm run seed   # resets users + driver positions
+cd server && npm run seed   # resets users + driver positions (refuses in production)
 ```
 
 | Role | Email | Password |

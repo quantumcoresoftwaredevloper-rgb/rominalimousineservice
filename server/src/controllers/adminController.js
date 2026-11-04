@@ -27,25 +27,55 @@ const limitOf = (v, fallback = 20, max = 100) =>
 
 // GET /api/admin/analytics
 export const analytics = asyncHandler(async (req, res) => {
-  const [totalRides, activeRides, totalDrivers, totalPassengers, revenue, recentRides] =
-    await Promise.all([
-      Ride.countDocuments(),
-      Ride.countDocuments({ status: { $in: ['pending', 'accepted', 'arriving', 'in_progress'] } }),
-      User.countDocuments({ role: 'driver' }),
-      User.countDocuments({ role: 'passenger' }),
-      Ride.aggregate([
-        { $match: { status: 'completed' } },
-        { $group: { _id: null, total: { $sum: '$fare.final' } } },
-      ]),
-      Ride.find().sort({ createdAt: -1 }).limit(10).populate('passenger driver', 'name'),
-    ]);
+  const [
+    totalRides,
+    activeRides,
+    scheduledRides,
+    totalDrivers,
+    approvedDrivers,
+    onlineDrivers,
+    totalPassengers,
+    revenue,
+    ratingAgg,
+    recentRides,
+  ] = await Promise.all([
+    Ride.countDocuments(),
+    Ride.countDocuments({ status: { $in: ['pending', 'accepted', 'arriving', 'in_progress'] } }),
+    Ride.countDocuments({ status: 'scheduled' }),
+    User.countDocuments({ role: 'driver' }),
+    User.countDocuments({ role: 'driver', isApproved: true }),
+    User.countDocuments({ role: 'driver', isApproved: true, 'driverDetails.isAvailable': true }),
+    User.countDocuments({ role: 'passenger' }),
+    // Revenue is money actually collected, not the sum of quoted fares. Cash
+    // counts only after the driver records collection.
+    Payment.aggregate([
+      { $match: { status: { $in: ['succeeded', 'cash_collected', 'cash'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    User.aggregate([
+      { $match: { role: 'driver', 'driverDetails.stats.ratingCount': { $gt: 0 } } },
+      {
+        $group: {
+          _id: null,
+          rating: { $avg: '$driverDetails.stats.rating' },
+          reviews: { $sum: '$driverDetails.stats.ratingCount' },
+        },
+      },
+    ]),
+    Ride.find().sort({ createdAt: -1 }).limit(10).populate('passenger driver', 'name'),
+  ]);
 
   res.json({
     totalRides,
     activeRides,
+    scheduledRides,
     totalDrivers,
+    approvedDrivers,
+    onlineDrivers,
     totalPassengers,
     revenue: revenue[0]?.total || 0,
+    averageRating: ratingAgg[0]?.rating ? Math.round(ratingAgg[0].rating * 10) / 10 : 0,
+    ratingCount: ratingAgg[0]?.reviews || 0,
     recentRides,
   });
 });
@@ -80,11 +110,15 @@ export const drivers = asyncHandler(async (req, res) => {
 
 // PATCH /api/admin/drivers/:id/approve { approved: boolean }
 export const approveDriver = asyncHandler(async (req, res) => {
+  const approved = req.body.approved !== false;
+  const update = { isApproved: approved };
+  // Un-approving a driver must also take them off the road immediately.
+  if (!approved) update['driverDetails.isAvailable'] = false;
   const driver = await User.findOneAndUpdate(
     { _id: req.params.id, role: 'driver' },
-    { isApproved: req.body.approved !== false },
+    { $set: update },
     { new: true }
-  ).select('-password');
+  ).select('-password -pushSubscriptions');
   if (!driver) return res.status(404).json({ message: 'Driver not found' });
   res.json({ driver });
 });
@@ -146,13 +180,17 @@ notify({
 
 // PATCH /api/admin/drivers/:id { driverDetails.isAvailable }
 export const toggleDriver = asyncHandler(async (req, res) => {
-  const driver = await User.findOneAndUpdate(
-    { _id: req.params.id, role: 'driver' },
-    { 'driverDetails.isAvailable': req.body.isAvailable },
-    { new: true }
-  );
+  const driver = await User.findOne({ _id: req.params.id, role: 'driver' }).select('isApproved');
   if (!driver) return res.status(404).json({ message: 'Driver not found' });
-  res.json({ driver });
+  if (req.body.isAvailable && !driver.isApproved) {
+    return res.status(400).json({ message: 'Approve the driver before placing them on duty' });
+  }
+  const updated = await User.findByIdAndUpdate(
+    req.params.id,
+    { $set: { 'driverDetails.isAvailable': !!req.body.isAvailable } },
+    { new: true }
+  ).select('-password -pushSubscriptions');
+  res.json({ driver: updated });
 });
 
 // GET /api/admin/users?search=&role=&page=&limit=
@@ -215,24 +253,55 @@ export const unsuspendUser = asyncHandler(async (req, res) => {
   res.json({ user });
 });
 
-// DELETE /api/admin/users/:id - permanently deletes a user + their data.
+// DELETE /api/admin/users/:id — anonymises the account and preserves the
+// financial record. Hard-deleting rides/payments destroyed the audit trail
+// required for tax, disputes and chargebacks.
 export const deleteUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  // Only the literal string 'admin' was checked, so super_admin fell straight
-  // through and could be deleted permanently.
   if (isStaffRole(user.role)) {
     return res.status(400).json({ message: 'Cannot delete a staff or admin account' });
   }
 
+  // Free a driver from any in-flight ride before removing their identity.
+  await Ride.updateMany(
+    { driver: user._id, status: { $in: ['accepted', 'arriving', 'in_progress'] } },
+    {
+      $set: {
+        driver: null,
+        status: 'cancelled',
+        cancelReason: 'Driver account removed',
+        'timestamps.cancelled': new Date(),
+      },
+    },
+  );
+
+  await User.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        name: 'Deleted user',
+        email: `deleted+${user._id}@invalid.local`,
+        phone: '',
+        avatar: '',
+        isSuspended: true,
+        isApproved: false,
+        tokenVersion: (user.tokenVersion || 1) + 1,
+      },
+      $unset: {
+        driverDetails: '',
+        pushSubscriptions: '',
+        verificationToken: '',
+        resetToken: '',
+      },
+    },
+  );
+
   await Promise.all([
-    User.deleteOne({ _id: user._id }),
     Location.deleteMany({ driver: user._id }),
     RefreshToken.deleteMany({ user: user._id }),
-    Ride.deleteMany({ $or: [{ passenger: user._id }, { driver: user._id }] }),
-    Payment.deleteMany({ user: user._id }),
   ]);
-  res.json({ success: true });
+  res.json({ success: true, anonymized: true });
 });
 
 // GET /api/admin/payments?status=&page=&limit=

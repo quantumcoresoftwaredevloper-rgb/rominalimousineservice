@@ -3,7 +3,8 @@ import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { LayoutDashboard, Radio, Navigation, CalendarDays, History, Wallet, Car, FileText, Star, TrendingUp, Bell, LifeBuoy, Settings, LogOut, Menu, X, Phone, MapPin } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext.jsx';
-import { useDriverProfile, useToggleAvailability } from '../hooks/useDriverQuery';
+import { useDriverProfile, useToggleAvailability, useDriverRides } from '../hooks/useDriverQuery';
+import useDriverLocationSharing from '../hooks/useDriverLocationSharing';
 import { Switch } from '../../../components/ui/Switch.jsx';
 import NotificationsBell from '../../../components/layout/NotificationsBell.jsx';
 
@@ -44,6 +45,13 @@ export default function DriverShell() {
   // returned 403 — a contradiction the driver could not act on.
   const online = approved && !!driver?.driverDetails?.isAvailable;
   const toggle = useToggleAvailability();
+  const { data: ridesData } = useDriverRides() as any;
+  const hasActiveRide = (ridesData?.rides ?? []).some((r: any) =>
+    ['accepted', 'arriving', 'in_progress'].includes(r.status),
+  );
+  // Publish location from the shell so every driver page (not just the
+  // dashboard) keeps dispatch and the passenger map up to date.
+  const { error: locationError } = useDriverLocationSharing(online || hasActiveRide);
 
   // An unapproved driver is refused with 403 DRIVER_NOT_APPROVED. That error
   // used to go nowhere — no onError, no UI — so the switch simply sprang back
@@ -51,7 +59,7 @@ export default function DriverShell() {
   const dutyMessage = dutyError
     || (toggle.error as any)?.response?.data?.message
     || (toggle.error as any)?.message
-    || '';
+    || (online && locationError ? `Location sharing is off: ${locationError}` : '');
   const onToggleDuty = () => {
     setDutyError('');
     toggle.mutate(!online);

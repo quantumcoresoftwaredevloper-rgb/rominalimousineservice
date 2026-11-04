@@ -13,6 +13,10 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
   const { user } = useAuth();
   const navigate = useNavigate();
   const [when, setWhen] = useState('now');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [flightNumber, setFlightNumber] = useState('');
+  const [airline, setAirline] = useState('');
+  const [airport, setAirport] = useState('');
   const [vehicleType, setVehicleType] = useState('');
   const [serviceType, setServiceType] = useState('');
   const [passengerCount, setPassengerCount] = useState(1);
@@ -42,6 +46,21 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
       setError('Please select your vehicle type.');
       return;
     }
+    if (when === 'later' && !scheduledAt) {
+      setError('Please choose your pickup date and time.');
+      return;
+    }
+    if (when === 'later') {
+      const pickupAt = new Date(scheduledAt);
+      if (Number.isNaN(pickupAt.getTime())) {
+        setError('Please choose a valid pickup date and time.');
+        return;
+      }
+      if (pickupAt.getTime() < Date.now() + 30 * 60 * 1000) {
+        setError('Scheduled pickups must be at least 30 minutes from now.');
+        return;
+      }
+    }
     // serviceType optional — defaults to '' (general)
     if (!user) {
       navigate('/login', { state: { from: '/' } });
@@ -57,8 +76,11 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
         serviceType,
         passengerCount,
         bags,
-        when,
-        extra,
+        scheduledAt: when === 'later' ? new Date(scheduledAt).toISOString() : null,
+        notes: extra,
+        ...(serviceType === 'airport'
+          ? { flightNumber, airline, airport }
+          : {}),
       });
       navigate(`/rides/track/${data.ride._id}`);
     } catch (err) {
@@ -96,7 +118,17 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
       </div>
 
       {when === 'later' && (
-        <Input type="datetime-local" label="Schedule for" min={new Date().toISOString().slice(0, 16)} />
+        <Input
+          type="datetime-local"
+          label="Schedule for"
+          value={scheduledAt}
+          onChange={(e) => setScheduledAt(e.target.value)}
+          min={(() => {
+            const d = new Date(Date.now() + 30 * 60 * 1000);
+            d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+            return d.toISOString().slice(0, 16);
+          })()}
+        />
       )}
 
       {/* Locations */}
@@ -181,11 +213,33 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
               ))}
             </select>
           </label>
+          {serviceType === 'airport' && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Input
+                label="Flight number"
+                placeholder="e.g. UA123"
+                value={flightNumber}
+                onChange={(e) => setFlightNumber(e.target.value.toUpperCase())}
+              />
+              <Input
+                label="Airline"
+                placeholder="e.g. United"
+                value={airline}
+                onChange={(e) => setAirline(e.target.value)}
+              />
+              <Input
+                label="Airport"
+                placeholder="BWI / IAD / DCA"
+                value={airport}
+                onChange={(e) => setAirport(e.target.value.toUpperCase())}
+              />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink">Passengers</span>
               <select value={passengerCount} onChange={(e) => setPassengerCount(+e.target.value)} className={field}>
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                {[1, 2, 3, 4, 5, 6].map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
               </select>
@@ -193,17 +247,18 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink">Bags</span>
               <select value={bags} onChange={(e) => setBags(+e.target.value)} className={field}>
-                {[0, 1, 2, 3, 4, 5].map((n) => (
+                {[0, 1, 2, 3, 4].map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
               </select>
             </label>
           </div>
           <Input
-            label="Notes for driver (optional)"
-            placeholder="Luggage, accessibility, flight number"
+            label="Notes for chauffeur (optional)"
+            placeholder="Luggage, accessibility, meeting point"
             value={extra}
             onChange={(e) => setExtra(e.target.value)}
+            maxLength={500}
           />
         </div>
       )}
@@ -213,7 +268,7 @@ export default function BookingForm({ pickup, dropoff, onPickupChange, onDropoff
       {/* Sticky CTA — always 44px, guest can see fare before login */}
       <div className="sticky bottom-0 -mx-6 -mb-6 mt-auto bg-white/95 px-6 pb-6 pt-3 backdrop-blur lg:static lg:bg-transparent lg:p-0">
         <Button type="submit" size="lg" loading={loading} className="w-full min-h-11 py-3.5 text-[15px] focus-visible:ring-2 focus-visible:ring-brand-500">
-          {user ? 'Request taxi — see fare' : 'See fare estimate (no login needed)'}
+          {user ? (when === 'later' ? 'Reserve this pickup' : 'Request ride — see fare') : 'See fare estimate (no login needed)'}
         </Button>
         {!user && <p className="mt-2 text-center text-xs text-muted">You’ll sign in only to confirm — fare is shown first.</p>}
       </div>

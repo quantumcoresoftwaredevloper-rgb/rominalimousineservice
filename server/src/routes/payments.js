@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { protect, requireRole } from '../middleware/auth.js';
+import { protect, requireRole, requireApprovedDriver } from '../middleware/auth.js';
 import * as payment from '../controllers/paymentController.js';
 
 const router = Router();
@@ -9,6 +9,7 @@ router.use(protect);
 router.get('/', payment.listPayments);
 router.get('/requests', payment.listRefundRequests);
 router.get('/:id', payment.getPayment);
+router.post('/:id/collect-cash', requireRole('driver'), requireApprovedDriver, payment.collectCash);
 // Passenger asks for refund — admin approves via /requests/:requestId/decision
 router.post('/:id/request-refund', payment.requestRefund);
 // Admin only: direct refund + decide on requests

@@ -75,8 +75,10 @@ hardcoded.
    | `RATE_LIMIT_AUTH` | `60` |
    | `RATE_LIMIT_LOGIN` | `20` (default is 10/15 min — bump it so real customers aren't locked out) |
    | `RATE_LIMIT_OTP` | `5` |
-   | `STRIPE_SECRET_KEY` | your `sk_test_…` key (from local `server/.env`) |
+   | `STRIPE_SECRET_KEY` | your `sk_test_…` (or live `sk_live_…`) key |
+   | `STRIPE_WEBHOOK_SECRET` | `whsec_…` from the Stripe webhook endpoint |
    | `STRIPE_PAYMENT_METHOD_DOMAIN` | your `pmd_…` value (informational) |
+   | `FLIGHTAWARE_API_KEY` | *(optional)* live flight status; unset = flight capture only |
    | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | *(optional)* enable web-push |
    | `SMTP_HOST/PORT/SECURE/USER/PASS/FROM` | *(optional)* real emails (see §5) |
    | `GOOGLE_CLIENT_ID/SECRET`, `FACEBOOK_APP_ID/SECRET`, `TWILIO_*` | *(optional)* leave empty to disable |
@@ -159,13 +161,29 @@ hardcoded.
 - **Web push.** `npx web-push generate-vapid-keys --json` → set the VAPID keys on Render;
   the bell icon then offers browser notifications.
 - **Live Stripe payments.** Swap `sk_test_…`/`pk_test_…` for **live** keys (Stripe account
-  verification required) and add the Stripe **webhook** for settlement edge cases. Until
-  then the site runs in Stripe test mode — test cards succeed but no real money moves.
+  verification required), add a Stripe webhook pointing at
+  `https://<api-host>/api/webhooks/stripe` for `payment_intent.succeeded` and
+  `charge.refunded`, and set `STRIPE_WEBHOOK_SECRET` to its signing secret. Without a
+  secret the endpoint fails closed (503). In production, card payments also fail closed
+  (503) when no Stripe key is configured — the sandbox simulator is dev/test only.
 - **Custom domain.** Buy a domain (e.g. via Namecheap/Cloudflare) and add it in both Vercel
   (frontend, ~5 min) and Google OAuth console if using social login. Update `CLIENT_ORIGIN`
   on Render to the new domain.
-- **Seat the demo data.** Run `npm run seed` once on Render (Render → service → **Shell**)
-  to create the admin/passenger/driver accounts, or create real accounts via the UI.
+- **Build DB indexes.** After deploying any schema/index change run
+  `npm run db:indexes` (Render → service → **Shell**, or on the server). This builds the
+  one-active-ride-per-driver and one-settled-payment-per-ride guards. Resolve reported
+  duplicates; never disable the indexes.
+- **Do not seed production.** `npm run seed` deletes users, driver positions and settings and
+  now refuses to run when `NODE_ENV=production` unless `ALLOW_PRODUCTION_SEED=true` is set
+  (disposable demos only). Create the first administrator instead:
+  ```bash
+  ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-unique-password' npm run admin:create
+  ```
+  Then create passenger/driver accounts through registration / the CRM.
+- **Audit driver vehicles.** Legacy/imported drivers may sit on a non-bookable
+  class (e.g. `executive-sedan`), which silently blocks dispatch. Run
+  `npm run db:audit-vehicles`; fix with `npm run db:audit-vehicles -- --fix=SUV`
+  (or edit each driver in Admin → Drivers).
 
 ---
 

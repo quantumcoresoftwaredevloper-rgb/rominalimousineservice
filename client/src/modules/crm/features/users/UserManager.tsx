@@ -4,6 +4,8 @@ import api from '../../../../services/api.js';
 import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Modal } from '../../components/ui/Modal';
+import { useAuth } from '../../../../context/AuthContext.jsx';
+import { hasPermission } from '../../../../utils/permissions.js';
 
 // Driver vehicle types — must match BOOKING_VEHICLES in src/data/vehicles.js
 // and VEHICLE_TYPES in server/src/services/adminUserService.js. Booking offers
@@ -20,6 +22,8 @@ const emptyForm = (role: 'passenger' | 'driver') => ({
 });
 
 export default function UserManager({ role }: { role: 'passenger' | 'driver' }) {
+  const { user: staffUser } = useAuth();
+  const canWrite = hasPermission(staffUser?.role, 'users.write');
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -73,7 +77,7 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
 
   const del = useMutation({
     mutationFn: async (id: string) => {
-      if (!confirm('Permanently delete this user and all their rides/payments?')) return;
+      if (!confirm('Permanently delete this user? This anonymises their profile, cancels active rides and removes their sessions. Historical rides/payments are retained for records.')) return;
       await api.delete(`/crm/users/${id}`);
     },
     onSuccess: invalidate,
@@ -110,9 +114,11 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold capitalize">{role} Management</h1>
-        <button onClick={openCreate} className="rounded-full btn-brand-gradient px-5 py-2 text-sm font-medium text-white">
-          + Add {role}
-        </button>
+        {canWrite && (
+          <button onClick={openCreate} className="rounded-full btn-brand-gradient px-5 py-2 text-sm font-medium text-white">
+            + Add {role}
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -181,6 +187,7 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
                 </p>
               )}
             </div>
+            {canWrite && (
             <div className="flex flex-wrap items-center justify-end gap-2">
               {role === 'driver' && (
                 <button
@@ -200,6 +207,7 @@ export default function UserManager({ role }: { role: 'passenger' | 'driver' }) 
               </button>
               <button onClick={() => del.mutate(u._id)} className="rounded-full border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950">Delete</button>
             </div>
+            )}
           </Card>
         ))}
         {!isLoading && users.length === 0 && <p className="text-sm text-muted">No {role}s found.</p>}

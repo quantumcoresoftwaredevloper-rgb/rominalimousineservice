@@ -3,7 +3,7 @@ import { Card, CardTitle, StatTile } from '../../components/ui/card';
 import { SkeletonCard } from '../../components/ui/skeleton';
 import { Badge } from '../../components/ui/badge';
 import { motion } from 'framer-motion';
-import { TrendingUp, Car, Users, DollarSign, Activity, Phone, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Car, Users, DollarSign, Activity, Phone, ArrowRight, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function OverviewPage() {
@@ -16,7 +16,7 @@ export default function OverviewPage() {
   const stats = [
     { label:'Total rides', value: analytics?.totalRides ?? 0, icon: Activity, sub:'All time' },
     { label:'Active now', value: analytics?.activeRides ?? 0, icon: Car, sub:'On trip' },
-    { label:'Drivers', value: analytics?.totalDrivers ?? 0, icon: Users, sub:'Fleet' },
+    { label:'Drivers', value: analytics?.approvedDrivers ?? 0, icon: Users, sub:`${analytics?.onlineDrivers ?? 0} on duty` },
     { label:'Passengers', value: analytics?.totalPassengers ?? 0, icon: Users, sub:'Clients' },
     { label:'Revenue', value: `$${(analytics?.revenue ?? 0).toFixed?.(2) ?? analytics?.revenue}`, icon: DollarSign, sub:'Collected' },
   ] as const;
@@ -30,7 +30,7 @@ export default function OverviewPage() {
         <div className="relative flex flex-wrap items-start justify-between gap-6">
           <div>
             <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium uppercase tracking-widest text-white/80 backdrop-blur">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-gold-400" /> Howard County • Live
+              <span className="h-2 w-2 animate-pulse rounded-full bg-gold-400" /> Maryland • Live
             </span>
             <h1 className="font-display mt-4 text-3xl font-bold tracking-tight sm:text-4xl">Operations <span className="text-gold-300">Overview</span></h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-white/75">Real-time dispatch, revenue and fleet health — the same navy &amp; gold editorial system as your website, not a generic SaaS dash.</p>
@@ -42,10 +42,10 @@ export default function OverviewPage() {
         </div>
         <div className="relative mt-8 grid grid-cols-2 gap-6 border-t border-white/10 pt-6 sm:grid-cols-4">
           {[
-            { k:'Today', v: ts?.series?.slice(-1)[0]?.bookings ?? '—' },
-            { k:'Revenue 14d', v: `$${(ts?.series ?? []).reduce((s:number,p:any)=>s+(p.revenue||0),0).toFixed(0)}` },
-            { k:'Drivers online', v: analytics?.totalDrivers ?? '—' },
-            { k:'Rating', v:'5.0' },
+            { k:'Booked today', v: ts?.series?.slice(-1)[0]?.bookings ?? '—' },
+            { k:'Fares 14d', v: `$${(ts?.series ?? []).reduce((s:number,p:any)=>s+(p.revenue||0),0).toFixed(0)}` },
+            { k:'Drivers online', v: analytics?.onlineDrivers ?? '—' },
+            { k:'Rating', v: analytics?.averageRating ? analytics.averageRating.toFixed(1) : '—' },
           ].map(item=> (
             <div key={item.k} className="text-center sm:text-left">
               <div className="font-display text-2xl font-extrabold text-gold-300">{item.v}</div>
@@ -65,7 +65,6 @@ export default function OverviewPage() {
               </div>
               <p className="font-display mt-4 text-2xl font-bold tracking-tight">{s.value}</p>
               <p className="text-xs font-semibold uppercase tracking-widest text-muted">{s.label}</p>
-              <p className="mt-2 inline-flex items-center gap-1 text-xs text-muted"><TrendingUp className="h-3 w-3 text-brand-600" /> vs yesterday</p>
             </Card>
           </motion.div>
         ))}

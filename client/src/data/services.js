@@ -8,11 +8,11 @@ export const SERVICES = [
     icon: Plane,
     tagline: 'BWI · Dulles · Reagan · Private Gates',
     summary:
-      'Meticulous, door-to-door luxury transfers to and from BWI, Washington Dulles (IAD) and Reagan National (DCA). Your dedicated chauffeur monitors your flight in real time, adjusts gate pickups automatically and stands ready as you clear the arrival lounge — with complimentary wait time, no delay penalties, and fixed flat rates.',
+      'Meticulous, door-to-door luxury transfers to and from BWI, Washington Dulles (IAD) and Reagan National (DCA). Add your flight number when you reserve so dispatch can coordinate around your arrival, and contact us directly if a flight is delayed. Fixed flat rates.',
     features: [
-      'Live commercial flight tracking with automatic gate adjustment',
+      'Flight number captured for dispatch coordination',
       'Complimentary terminal wait time & meet-and-greet arrivals',
-      'No penalty charges for delayed arrivals',
+      'Contact dispatch for delayed arrivals',
       'Fixed flat rates — no surge pricing',
       'Ramp-side FBO / private aviation coordination',
     ],

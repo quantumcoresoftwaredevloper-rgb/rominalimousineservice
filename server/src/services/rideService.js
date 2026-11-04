@@ -2,6 +2,17 @@ import Ride from '../models/Ride.js';
 import Location from '../models/Location.js';
 import User from '../models/User.js';
 import { getSettings } from './settingsService.js';
+import {
+  assertBookableVehicleType,
+  clampToVehicleCapacity,
+  estimateFare,
+  parseScheduledAt,
+  SCHEDULED_PROMOTION_WINDOW_MS,
+  DEFAULT_VEHICLE_TYPE,
+  assertServiceType,
+  sanitizeNotes,
+  sanitizeFlightField,
+} from './pricing.js';
 
 const RADIUS_M = 5000;
 
@@ -44,6 +55,28 @@ export const geocode = async (query) => {
   return result;
 };
 
+// Resolve a pickup/dropoff input into a coordinate. Accepts either a complete
+// {address,lat,lng} object from the map/autocomplete or a free-text address,
+// and rejects malformed coordinates before they reach Mongo.
+const resolvePoint = async (value, label) => {
+  if (!value) throw Object.assign(new Error(`${label} is required`), { statusCode: 400 });
+  if (value.lat != null || value.lng != null) {
+    const lat = Number(value.lat);
+    const lng = Number(value.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw Object.assign(new Error(`Invalid ${label.toLowerCase()} coordinates`), { statusCode: 400 });
+    }
+    const address = String(value.address || '').trim();
+    if (!address) {
+      throw Object.assign(new Error(`${label} address is required`), { statusCode: 400 });
+    }
+    return { address, lat, lng };
+  }
+  const address = String(value.address || value).trim();
+  if (!address) throw Object.assign(new Error(`${label} is required`), { statusCode: 400 });
+  return geocode(address);
+};
+
 // OSRM route calculation - returns distance, duration, and polyline
 export const getRoute = async (from, to) => {
   const key = `${from.lat.toFixed(4)},${from.lng.toFixed(4)}-${to.lat.toFixed(4)},${to.lng.toFixed(4)}`;
@@ -62,81 +95,6 @@ export const getRoute = async (from, to) => {
   const result = { distanceKm, durationMin, polyline };
   cacheSet(ROUTE_CACHE, key, result, 5 * 60 * 1000);
   return result;
-};
-
-// Simple fare: base + per-km (vehicle-specific, overridable from Admin Settings).
-const estimateFare = (distanceKm, durationMin, vehicleType, overrides = {}) => {
-  const rates = {
-    'executive-sedan': { base: 6, perKm: 1.9, perMin: 0.4 },
-    'economy-sedan': { base: 3, perKm: 1.4, perMin: 0.3 },
-    'economy-suv': { base: 5, perKm: 1.8, perMin: 0.4 },
-    'premium-suv': { base: 7, perKm: 2.2, perMin: 0.45 },
-    'luxury-suv': { base: 10, perKm: 2.6, perMin: 0.5 },
-    SUV: { base: 7, perKm: 2.2, perMin: 0.45 },
-    Chevrolet: { base: 8, perKm: 2.4, perMin: 0.5 },
-    van: { base: 8, perKm: 2.0, perMin: 0.42 },
-    'mini-coach': { base: 35, perKm: 3.5, perMin: 0.8 },
-    'school-bus': { base: 45, perKm: 4.0, perMin: 0.9 },
-    motorcoach: { base: 70, perKm: 5.0, perMin: 1.2 },
-  };
-  const rate = rates[vehicleType] || rates['economy-sedan'];
-  // Global overrides (Admin Settings) take precedence when set.
-  const base = overrides.baseFare ?? rate.base;
-  const perKm = overrides.perKm ?? rate.perKm;
-  const perMin = overrides.perMin ?? rate.perMin;
-  const total = base + distanceKm * perKm + durationMin * perMin;
-  return Math.round(total * 100) / 100;
-};
-
-// Seating capacity per vehicle type. The server is the authority: the client
-// only ever *displays* a capacity, so a caller hitting the API directly
-// bypasses any UI clamp entirely. Without this the schema's `min: 1` is the
-// only bound and `passengerCount: 500` persists against a 4-seat sedan, which
-// is discovered at the kerb.
-const VEHICLE_CAPACITY = {
-  'executive-sedan': 4,
-  'economy-sedan': 4,
-  'economy-suv': 6,
-  'premium-suv': 6,
-  'luxury-suv': 7,
-  SUV: 6,
-  Chevrolet: 6,
-  van: 14,
-  'mini-coach': 32,
-  'school-bus': 48,
-  motorcoach: 56,
-};
-const DEFAULT_CAPACITY = 4;
-
-// Luggage scales with the vehicle, not with the party size. A sedan cannot
-// take a group's worth of bags even when it is carrying four passengers.
-const VEHICLE_BAG_CAPACITY = {
-  'executive-sedan': 3,
-  'economy-sedan': 3,
-  'economy-suv': 4,
-  'premium-suv': 4,
-  'luxury-suv': 5,
-  SUV: 4,
-  Chevrolet: 4,
-  van: 12,
-  'mini-coach': 32,
-  'school-bus': 20,
-  motorcoach: 40,
-};
-
-// Clamp rather than reject. A stale client still sends its own count, and
-// failing a legitimate booking is worse than landing it on the largest party
-// the vehicle can actually carry. Non-numeric input resolves to the maximum,
-// a negative number to zero.
-const clampToVehicleCapacity = (vehicleType, passengerCount, bags) => {
-  const maxPassengers = VEHICLE_CAPACITY[vehicleType] ?? DEFAULT_CAPACITY;
-  const maxBags = VEHICLE_BAG_CAPACITY[vehicleType] ?? 3;
-  const n = Number(passengerCount);
-  const b = Number(bags);
-  return {
-    passengerCount: Math.min(Number.isFinite(n) ? Math.max(Math.floor(n), 1) : maxPassengers, maxPassengers),
-    bags: Math.min(Number.isFinite(b) ? Math.max(Math.floor(b), 0) : 0, maxBags),
-  };
 };
 
 // Straight-line distance in metres — good enough to decide "are these the same
@@ -169,17 +127,25 @@ const assertDistinctStops = (pickup, dropoff) => {
 };
 
 export const createRide = async (passengerId, input) => {
-  // Dereferenced input.pickup.lat with no presence check, so a body without
-  // pickup threw a raw TypeError and surfaced as a 500.
   if (!input?.pickup || !input?.dropoff) {
     throw Object.assign(new Error('Pickup and drop-off are required'), { statusCode: 400 });
   }
-  const pickup = input.pickup.lat ? input.pickup : await geocode(input.pickup);
-  const dropoff = input.dropoff.lat ? input.dropoff : await geocode(input.dropoff);
 
+  const vehicleType = assertBookableVehicleType(input.vehicleType || DEFAULT_VEHICLE_TYPE);
+  const serviceType = assertServiceType(input.serviceType || '');
+
+  // A request with `when: 'later'` but no time must never silently become an
+  // immediate ride, and a supplied time must be valid and far enough ahead.
+  if (input.when === 'later' && !input.scheduledAt) {
+    throw Object.assign(new Error('Please choose a pickup date and time'), { statusCode: 400 });
+  }
+  const requestedTime = input.scheduledAt ?? null;
+  const { scheduledAt, immediate } = parseScheduledAt(requestedTime);
+
+  const pickup = await resolvePoint(input.pickup, 'Pickup');
+  const dropoff = await resolvePoint(input.dropoff, 'Drop-off');
   assertDistinctStops(pickup, dropoff);
 
-  const vehicleType = input.vehicleType || 'economy-sedan';
   const { passengerCount, bags } = clampToVehicleCapacity(
     vehicleType,
     input.passengerCount,
@@ -195,9 +161,15 @@ export const createRide = async (passengerId, input) => {
     pickup,
     dropoff,
     vehicleType,
-    serviceType: input.serviceType || '',
+    serviceType,
     passengerCount,
     bags,
+    notes: sanitizeNotes(input.notes ?? input.extra),
+    flightNumber: sanitizeFlightField(input.flightNumber, 20),
+    airline: sanitizeFlightField(input.airline, 60),
+    airport: sanitizeFlightField(input.airport, 10),
+    status: immediate ? 'pending' : 'scheduled',
+    scheduledAt: scheduledAt || undefined,
     fare: {
       estimated,
       distanceKm: route.distanceKm,
@@ -257,7 +229,8 @@ export const findNearbyDrivers = async ({ lat, lng, radius = RADIUS_M, vehicleTy
   const shape = (l) => ({
     _id: l.driver._id,
     name: l.driver.name,
-    phone: l.driver.phone,
+    // Phone is intentionally omitted: this endpoint is available to any
+    // authenticated passenger and must not double as a driver contact list.
     avatar: l.driver.avatar,
     vehicleType: l.driver.driverDetails?.vehicleType,
     plateNumber: l.driver.driverDetails?.plateNumber,
@@ -291,6 +264,18 @@ export const findNearbyDrivers = async ({ lat, lng, radius = RADIUS_M, vehicleTy
 };
 
 export const acceptRide = async (rideId, driverId) => {
+  const driver = await User.findOne({ _id: driverId, role: 'driver' }).select(
+    'isApproved isSuspended driverDetails.vehicleType',
+  );
+  if (!driver) throw Object.assign(new Error('Driver not found'), { statusCode: 403 });
+  if (!driver.isApproved || driver.isSuspended) {
+    throw Object.assign(new Error('Driver account is not approved'), { statusCode: 403 });
+  }
+  const driverVehicle = driver.driverDetails?.vehicleType;
+  if (!driverVehicle) {
+    throw Object.assign(new Error('Register a vehicle before accepting rides'), { statusCode: 400 });
+  }
+
   // Both guards below used to be read-then-write, so two drivers hitting the
   // same pending ride both saw "available" and both saved — last write won,
   // but both were already sent ride:driverFound and both got a notification,
@@ -298,14 +283,39 @@ export const acceptRide = async (rideId, driverId) => {
   // second ride while the first was still active.
   // findOneAndUpdate with a state predicate makes each claim a single atomic
   // database operation: whoever flips pending -> accepted first owns the ride.
-  const claimed = await Ride.findOneAndUpdate(
-    { _id: rideId, status: 'pending', driver: null },
-    { $set: { driver: driverId, status: 'accepted', 'timestamps.accepted': new Date() } },
-    { new: true },
-  );
+  // The vehicle predicate also closes the API path around the filtered feed:
+  // an approved Chevrolet driver can never claim an SUV request.
+  let claimed;
+  try {
+    claimed = await Ride.findOneAndUpdate(
+      {
+        _id: rideId,
+        status: 'pending',
+        driver: null,
+        vehicleType: driverVehicle,
+      },
+      { $set: { driver: driverId, status: 'accepted', 'timestamps.accepted': new Date() } },
+      { new: true },
+    );
+  } catch (err) {
+    if (err?.code === 11000) {
+      throw Object.assign(new Error('You already have an active ride'), { statusCode: 409 });
+    }
+    throw err;
+  }
   if (!claimed) {
-    const current = await Ride.findById(rideId).select('driver status');
+    const current = await Ride.findById(rideId).select('driver status vehicleType');
     if (!current) throw Object.assign(new Error('Ride not found'), { statusCode: 404 });
+    if (
+      current.status === 'pending' &&
+      !current.driver &&
+      current.vehicleType !== driverVehicle
+    ) {
+      throw Object.assign(
+        new Error(`This request requires a ${current.vehicleType}; your vehicle is ${driverVehicle}`),
+        { statusCode: 409 },
+      );
+    }
     // Re-accepting your own ride is idempotent rather than an error.
     if (String(current.driver) === String(driverId) && current.status === 'accepted') {
       return Ride.findById(rideId).populate('passenger driver', 'name phone avatar driverDetails');
@@ -336,7 +346,10 @@ export const acceptRide = async (rideId, driverId) => {
 // returns the ride to the pending board. Returns the populated ride plus the
 // id of the driver who was unassigned (if any).
 export const assignDriver = async (rideId, driverId) => {
-  const ride = await Ride.findOne({ _id: rideId, status: { $nin: ['completed', 'cancelled'] } });
+  const ride = await Ride.findOne({
+    _id: rideId,
+    status: { $in: ['pending', 'scheduled'] },
+  });
   if (!ride) throw Object.assign(new Error('Ride not found or no longer assignable'), { statusCode: 404 });
 
   const removedDriverId = ride.driver ? String(ride.driver) : null;
@@ -349,6 +362,13 @@ export const assignDriver = async (rideId, driverId) => {
     const driver = await User.findOne({ _id: driverId, role: 'driver' });
     if (!driver) throw Object.assign(new Error('Driver not found'), { statusCode: 400 });
     if (driver.isSuspended) throw Object.assign(new Error('Driver is suspended'), { statusCode: 400 });
+    if (!driver.isApproved) throw Object.assign(new Error('Driver is not approved yet'), { statusCode: 400 });
+    if (driver.driverDetails?.vehicleType !== ride.vehicleType) {
+      throw Object.assign(
+        new Error(`Driver vehicle does not match the requested ${ride.vehicleType} class`),
+        { statusCode: 400 },
+      );
+    }
 
     const busy = await Ride.findOne({
       driver: driverId,
@@ -357,43 +377,110 @@ export const assignDriver = async (rideId, driverId) => {
     }).select('_id');
     if (busy) throw Object.assign(new Error('Driver already has an active ride'), { statusCode: 409 });
 
-    ride.driver = driverId;
-    ride.status = 'accepted';
-    ride.timestamps.accepted = new Date();
+    // Scheduled rides keep the `scheduled` state until their pickup window;
+    // assigning now records the driver without starting the trip.
+    const nextStatus = ride.status === 'scheduled' ? 'scheduled' : 'accepted';
+    const update = { driver: driverId, status: nextStatus };
+    if (nextStatus === 'accepted') update['timestamps.accepted'] = new Date();
+
+    let updated;
+    try {
+      // Optimistic predicate on the state we just read: two dispatchers
+      // assigning simultaneously cannot both succeed.
+      updated = await Ride.findOneAndUpdate(
+        { _id: rideId, status: ride.status, driver: ride.driver ?? null },
+        { $set: update },
+        { new: true },
+      );
+    } catch (err) {
+      if (err?.code === 11000) {
+        throw Object.assign(new Error('Driver already has an active ride'), { statusCode: 409 });
+      }
+      throw err;
+    }
+    if (!updated) {
+      throw Object.assign(new Error('Ride was updated by another dispatcher. Refresh and try again.'), { statusCode: 409 });
+    }
   } else {
-    ride.driver = null;
-    ride.status = 'pending';
-    ride.timestamps.accepted = undefined;
+    const nextStatus = ride.status === 'scheduled' ? 'scheduled' : 'pending';
+    const update = { driver: null, status: nextStatus };
+    const unset = nextStatus === 'pending' ? { 'timestamps.accepted': '' } : undefined;
+    const updated = await Ride.findOneAndUpdate(
+      { _id: rideId, driver: ride.driver, status: ride.status },
+      { $set: update, ...(unset ? { $unset: unset } : {}) },
+      { new: true },
+    );
+    if (!updated) {
+      throw Object.assign(new Error('Ride was updated by another dispatcher. Refresh and try again.'), { statusCode: 409 });
+    }
   }
 
-  await ride.save();
   const populated = await Ride.findById(rideId).populate('passenger driver', 'name phone avatar driverDetails');
   return { ride: populated, removedDriverId };
+};
+
+// Promote scheduled reservations into live dispatch as their pickup window
+// approaches. Returns the rides that changed so the caller can emit events.
+export const promoteDueScheduledRides = async (now = new Date()) => {
+  const due = await Ride.find({
+    status: 'scheduled',
+    scheduledAt: { $lte: new Date(now.getTime() + SCHEDULED_PROMOTION_WINDOW_MS) },
+  }).select('_id driver');
+
+  const promoted = [];
+  for (const candidate of due) {
+    const nextStatus = candidate.driver ? 'accepted' : 'pending';
+    const update = { status: nextStatus };
+    if (nextStatus === 'accepted') update['timestamps.accepted'] = new Date();
+    try {
+      const ride = await Ride.findOneAndUpdate(
+        { _id: candidate._id, status: 'scheduled' },
+        { $set: update },
+        { new: true },
+      ).populate('passenger driver', 'name phone avatar driverDetails');
+      if (ride) promoted.push(ride);
+    } catch (err) {
+      // Driver may still be on another active trip; leave the reservation
+      // scheduled and retry on the next sweep.
+      if (err?.code !== 11000) throw err;
+    }
+  }
+  return promoted;
 };
 
 export const findAdmins = () =>
   User.find({ role: 'admin', isSuspended: false }).select('_id').lean();
 
 export const updateStatus = async (rideId, status, driverId) => {
-  const allowed = ['arriving', 'in_progress', 'completed'];
-  if (!allowed.includes(status)) {
+  const previous = { arriving: 'accepted', in_progress: 'arriving', completed: 'in_progress' };
+  if (!previous[status]) {
     throw Object.assign(new Error('Invalid status transition'), { statusCode: 400 });
   }
 
-  const ride = await Ride.findOne({ _id: rideId, driver: driverId, status: { $ne: 'completed' } });
-  if (!ride) throw Object.assign(new Error('Ride not found or not assigned to you'), { statusCode: 404 });
+  const tsKey = status === 'arriving' ? 'arrived' : status === 'in_progress' ? 'started' : 'completed';
+  const set = { status, [`timestamps.${tsKey}`]: new Date() };
 
-  // Map driver-facing status to schema timestamp key (arriving -> arrived)
-  const tsKey = status === 'arriving' ? 'arrived' : status === 'in_progress' ? 'started' : status;
-  ride.status = status;
-  ride.timestamps[tsKey] = new Date();
-  if (status === 'completed') {
-    ride.timestamps.completed = new Date();
-    // Final fare: use the estimate at completion (no metering in sandbox).
-    ride.fare.final = ride.fare.estimated;
+  // Completion freezes the final fare once, atomically. Computing it from a
+  // stale read then saving would allow two concurrent requests to overwrite a
+  // fare edited by an admin in between.
+  const ride = await Ride.findOne({ _id: rideId, driver: driverId }).select('fare');
+  if (!ride) throw Object.assign(new Error('Ride not found or not assigned to you'), { statusCode: 404 });
+  if (status === 'completed') set['fare.final'] = ride.fare.estimated;
+
+  const updated = await Ride.findOneAndUpdate(
+    { _id: rideId, driver: driverId, status: previous[status] },
+    { $set: set },
+    { new: true },
+  );
+  if (!updated) {
+    const current = await Ride.findById(rideId).select('status driver');
+    if (!current) throw Object.assign(new Error('Ride not found'), { statusCode: 404 });
+    if (String(current.driver) !== String(driverId)) {
+      throw Object.assign(new Error('Ride not found or not assigned to you'), { statusCode: 404 });
+    }
+    throw Object.assign(new Error(`Cannot move ride from ${current.status} to ${status}`), { statusCode: 409 });
   }
 
-  await ride.save();
   return Ride.findById(rideId).populate('passenger driver', 'name phone avatar');
 };
 
@@ -401,20 +488,20 @@ export const updateStatus = async (rideId, status, driverId) => {
 // locations and recomputes route + fare. If a driver already accepted, editing
 // is blocked (they'd be expecting the original job).
 export const editRide = async (rideId, passengerId, input) => {
-  const ride = await Ride.findOne({ _id: rideId, passenger: passengerId, status: 'pending' });
+  const ride = await Ride.findOne({
+    _id: rideId,
+    passenger: passengerId,
+    status: { $in: ['pending', 'scheduled'] },
+  });
   if (!ride) {
-    throw Object.assign(new Error('Ride can only be edited while pending'), { statusCode: 409 });
+    throw Object.assign(new Error('Ride can only be edited before a driver accepts'), { statusCode: 409 });
   }
 
   let pickup = ride.pickup;
   let dropoff = ride.dropoff;
 
-  if (input.pickup !== undefined) {
-    pickup = input.pickup.lat ? input.pickup : await geocode(input.pickup);
-  }
-  if (input.dropoff !== undefined) {
-    dropoff = input.dropoff.lat ? input.dropoff : await geocode(input.dropoff);
-  }
+  if (input.pickup !== undefined) pickup = await resolvePoint(input.pickup, 'Pickup');
+  if (input.dropoff !== undefined) dropoff = await resolvePoint(input.dropoff, 'Drop-off');
 
   // Re-check on edit: moving one stop onto the other is just as unserviceable
   // as creating it that way.
@@ -438,13 +525,24 @@ export const editRide = async (rideId, passengerId, input) => {
   }
 
   const settings = await getSettings();
-  const vehicleType = input.vehicleType || ride.vehicleType;
+  const vehicleType = input.vehicleType
+    ? assertBookableVehicleType(input.vehicleType)
+    : ride.vehicleType;
   const estimated = estimateFare(distanceKm, durationMin, vehicleType, settings);
 
   ride.pickup = pickup;
   ride.dropoff = dropoff;
   ride.vehicleType = vehicleType;
-  ride.serviceType = input.serviceType ?? ride.serviceType;
+  ride.serviceType = input.serviceType !== undefined
+    ? assertServiceType(input.serviceType)
+    : ride.serviceType;
+  ride.notes = input.notes !== undefined || input.extra !== undefined
+    ? sanitizeNotes(input.notes ?? input.extra)
+    : ride.notes;
+  if (input.flightNumber !== undefined) ride.flightNumber = sanitizeFlightField(input.flightNumber, 20);
+  if (input.airline !== undefined) ride.airline = sanitizeFlightField(input.airline, 60);
+  if (input.airport !== undefined) ride.airport = sanitizeFlightField(input.airport, 10);
+
   // Re-clamp even when the client sends no counts: switching to a smaller class
   // can leave an existing party over capacity.
   const clamped = clampToVehicleCapacity(
@@ -460,22 +558,35 @@ export const editRide = async (rideId, passengerId, input) => {
   ride.fare.distanceKm = distanceKm;
   ride.fare.durationMin = durationMin;
 
+  if (input.scheduledAt !== undefined) {
+    const { scheduledAt, immediate } = parseScheduledAt(input.scheduledAt);
+    ride.scheduledAt = scheduledAt || undefined;
+    ride.status = immediate ? 'pending' : 'scheduled';
+  }
+
   await ride.save();
   return Ride.findById(rideId).populate('passenger', 'name phone avatar');
 };
 
 export const cancelRide = async (rideId, userId, reason = '') => {
-  const ride = await Ride.findOne({
-    _id: rideId,
-    status: { $nin: ['completed', 'cancelled'] },
-    $or: [{ passenger: userId }, { driver: userId }],
-  });
+  // Single conditional write: a read-then-save here could overwrite a status
+  // the driver advanced (e.g. completed) between the two operations.
+  const ride = await Ride.findOneAndUpdate(
+    {
+      _id: rideId,
+      status: { $nin: ['completed', 'cancelled'] },
+      $or: [{ passenger: userId }, { driver: userId }],
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        cancelReason: reason,
+        'timestamps.cancelled': new Date(),
+      },
+    },
+    { new: true },
+  );
   if (!ride) throw Object.assign(new Error('Ride not found or cannot be cancelled'), { statusCode: 404 });
-
-  ride.status = 'cancelled';
-  ride.cancelReason = reason;
-  ride.timestamps.cancelled = new Date();
-  await ride.save();
   return ride;
 };
 
@@ -533,7 +644,7 @@ export const getRideById = async (id, requester = null) => {
 // Roles allowed to see every ride. Kept explicit because the scoping below
 // defaults to deny: a new role added to the enum must be added here
 // deliberately rather than inheriting the full ride table by omission.
-const FULL_RIDE_VISIBILITY = ['admin', 'super_admin', 'dispatcher', 'manager'];
+const FULL_RIDE_VISIBILITY = ['admin', 'super_admin', 'dispatcher', 'manager', 'finance', 'support'];
 
 export const listRides = async (user, filters = {}) => {
   // This was an if-chain with no else, so any role that was not

@@ -10,6 +10,7 @@ import { requestRefund, listPayments } from '../../services/paymentService.js';
 
 const STATUS_STYLE = {
   pending: 'bg-accent-50 text-accent-700',
+  scheduled: 'bg-brand-50 text-brand-700',
   accepted: 'bg-blue-50 text-blue-700',
   arriving: 'bg-blue-50 text-blue-700',
   in_progress: 'bg-brand-50 text-brand-700',
@@ -20,8 +21,25 @@ const STATUS_STYLE = {
 const PAY_STYLE = {
   paid: 'bg-green-50 text-green-700',
   cash: 'bg-gold-100 text-gold-700',
+  cash_due: 'bg-gold-100 text-gold-700',
+  cash_collected: 'bg-green-50 text-green-700',
   refunded: 'bg-blue-50 text-blue-700',
   pending: 'bg-yellow-50 text-yellow-700',
+};
+
+const paymentLabel = (payment) => {
+  switch (payment?.status) {
+    case 'paid':
+      return payment.method === 'cash' ? 'Cash paid' : 'Paid';
+    case 'cash_due':
+      return 'Cash due';
+    case 'cash_collected':
+      return 'Cash paid';
+    case 'refunded':
+      return 'Refunded';
+    default:
+      return 'Unpaid';
+  }
 };
 
 export default function RideHistory() {
@@ -84,12 +102,19 @@ export default function RideHistory() {
                     <span className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ${STATUS_STYLE[r.status]}`}>
                       {r.status.replace('_', ' ')}
                     </span>
-                    {r.status === 'completed' && (
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${r.payment?.status === 'paid' && r.payment?.method === 'cash' ? PAY_STYLE.cash : PAY_STYLE[r.payment?.status] || PAY_STYLE.pending}`}>
-                        {r.payment?.status === 'paid' ? r.payment?.method === 'cash' ? 'Cash' : 'Paid' : r.payment?.status === 'refunded' ? 'Refunded' : 'Unpaid'}
+                    {['completed', 'scheduled'].includes(r.status) && (
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${PAY_STYLE[r.payment?.status] || PAY_STYLE.pending}`}>
+                        {paymentLabel(r.payment)}
                       </span>
                     )}
-                    <span className="text-xs text-muted">{new Date(r.createdAt).toLocaleDateString()} • {r.fare.distanceKm}km • {r.fare.durationMin}min</span>
+                    <span className="text-xs text-muted">
+                      {new Date(r.scheduledAt || r.createdAt).toLocaleString()} • {r.fare.distanceKm}km • {r.fare.durationMin}min
+                    </span>
+                    {r.scheduledAt && r.status === 'scheduled' && (
+                      <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700">
+                        Scheduled
+                      </span>
+                    )}
                     {r.driver && <span className="inline-flex items-center gap-1 rounded-full bg-accent-50 px-2.5 py-1 text-xs dark:bg-white/5"><span className="h-6 w-6 rounded-full bg-brand-50 grid place-items-center text-xs font-bold text-brand-700">{r.driver?.name?.[0]}</span>{r.driver?.name}</span>}
                   </div>
                   <p className="mt-2 flex items-center gap-1 truncate text-sm font-medium dark:text-white"><span className="h-2 w-2 rounded-full bg-green-500" />{r.pickup.address}</p>
@@ -100,16 +125,18 @@ export default function RideHistory() {
                   <p className="font-display font-bold text-brand-700 dark:text-white">${(r.status === 'completed' ? r.fare.final : r.fare.estimated || 0).toFixed(2)}</p>
                   <p className="text-xs text-muted">{vehicleLabel(r.vehicleType)} • {r.passengerCount} pax</p>
                   <div className="flex flex-wrap gap-1.5 justify-end">
-                    {['pending', 'accepted', 'arriving', 'in_progress'].includes(r.status) && (
-                      <Link to={`/rides/track/${r._id}`} className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">Track • Live Chat</Link>
+                    {['pending', 'scheduled', 'accepted', 'arriving', 'in_progress'].includes(r.status) && (
+                      <Link to={`/rides/track/${r._id}`} className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">
+                        {r.status === 'scheduled' ? 'View reservation' : 'Track • Live Chat'}
+                      </Link>
                     )}
-                    {r.status === 'pending' && (
+                    {['pending', 'scheduled'].includes(r.status) && (
                       <button onClick={() => setEditing(r)} className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-brand-700 ring-1 ring-brand-200 hover:bg-brand-50">Edit</button>
                     )}
                     {r.status === 'completed' && r.payment?.status === 'pending' && (
                       <button onClick={() => setPaying(r)} className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white">Pay</button>
                     )}
-                    {r.status === 'completed' && r.payment?.status === 'paid' && r.payment?.method !== 'cash' && !r.rating?.score && (
+                    {r.status === 'completed' && r.payment?.status === 'paid' && r.payment?.method !== 'cash' && (
                       <button onClick={() => { setRefundRide(r); setRefundReason(''); setRefundMsg(''); }} className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">Request Refund</button>
                     )}
                     {r.status === 'completed' && !r.rating?.score && (
@@ -132,15 +159,21 @@ export default function RideHistory() {
           ride={paying}
           onClose={() => setPaying(null)}
           onPaid={(payment) => {
+            const nextStatus =
+              payment.status === 'succeeded' ? 'paid' :
+              payment.status === 'cash_collected' ? 'cash_collected' :
+              payment.status === 'cash_due' || payment.status === 'cash' ? 'cash_due' :
+              payment.status;
             patch(paying._id, (r) => ({
               ...r,
               payment: {
                 ...r.payment,
-                status: 'paid',
+                status: nextStatus,
                 method: payment.method,
                 transactionId: payment.transactionId,
               },
             }));
+            setPaying(null);
           }}
         />
       )}

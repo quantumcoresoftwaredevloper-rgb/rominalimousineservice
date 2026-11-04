@@ -3,7 +3,7 @@ import { editRide } from '../../services/rideService.js';
 import { searchPlaces } from '../../services/rideService.js';
 import { Input } from '../../components/ui/Input.jsx';
 import { Button } from '../../components/ui/Button.jsx';
-import { VEHICLES } from '../../data/vehicles.js';
+import { BOOKING_VEHICLES } from '../../data/vehicles.js';
 
 // Edit a pending ride: change pickup/dropoff, vehicle or party size. The server
 // re-geocodes changed locations and recomputes the fare + route.
@@ -14,6 +14,13 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
     vehicleType: ride.vehicleType,
     passengerCount: ride.passengerCount,
     bags: ride.bags,
+    scheduledAt: ride.scheduledAt
+      ? (() => {
+          const d = new Date(ride.scheduledAt);
+          d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+          return d.toISOString().slice(0, 16);
+        })()
+      : '',
   });
   const [suggestions, setSuggestions] = useState(null);
   const [activeField, setActiveField] = useState(null);
@@ -54,6 +61,8 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
         bags: Number(form.bags),
         pickup: changed('pickup') ? form.pickup : undefined,
         dropoff: changed('dropoff') ? form.dropoff : undefined,
+        // Empty means "book now"; a value must still be >= 30 minutes ahead.
+        scheduledAt: form.scheduledAt ? new Date(form.scheduledAt).toISOString() : null,
       };
       const { data } = await editRide(ride._id, payload);
       onSaved?.(data.ride);
@@ -99,8 +108,8 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-brand-950/50 p-4" role="dialog" aria-modal="true">
       <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
-        <h2 className="text-lg font-bold">Edit ride</h2>
-        <p className="mt-1 text-sm text-muted">Changes apply while the ride is still pending.</p>
+        <h2 className="text-lg font-bold">Edit {ride.status === 'scheduled' ? 'reservation' : 'ride'}</h2>
+        <p className="mt-1 text-sm text-muted">Changes apply before a chauffeur accepts.</p>
 
         <form onSubmit={submit} className="mt-5 space-y-4">
           {locationField('pickup', 'Pickup')}
@@ -114,7 +123,7 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
                 value={form.vehicleType}
                 onChange={(e) => setForm({ ...form, vehicleType: e.target.value })}
               >
-                {VEHICLES.map((v) => (
+                {BOOKING_VEHICLES.map((v) => (
                   <option key={v.id} value={v.id}>{v.label}</option>
                 ))}
               </select>
@@ -124,7 +133,7 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
               <input
                 type="number"
                 min="1"
-                max="16"
+                max="6"
                 className="input-pill w-full border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-200"
                 value={form.passengerCount}
                 onChange={(e) => setForm({ ...form, passengerCount: e.target.value })}
@@ -138,6 +147,13 @@ export default function EditRideModal({ ride, onClose, onSaved }) {
             min="0"
             value={form.bags}
             onChange={(e) => setForm({ ...form, bags: e.target.value })}
+          />
+
+          <Input
+            label="Scheduled pickup (leave empty to book now)"
+            type="datetime-local"
+            value={form.scheduledAt}
+            onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })}
           />
 
           {error && <p className="text-sm text-red-600">{error}</p>}

@@ -11,7 +11,11 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "seed": "node src/seed/index.js",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "node --test test",
+    "db:indexes": "node scripts/sync-indexes.js",
+    "admin:create": "node scripts/create-admin.js",
+    "db:audit-vehicles": "node scripts/audit-driver-vehicles.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -23,7 +27,7 @@
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.1",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "^10.3.1",
     "passport": "^0.7.0",
     "passport-facebook": "^3.0.0",
     "passport-google-oauth20": "^2.0.0",
@@ -37,5 +41,8 @@
   "devDependencies": {
     "eslint": "^9.8.0",
     "nodemon": "^3.1.4"
+  },
+  "overrides": {
+    "qs": "^6.16.1"
   }
 }

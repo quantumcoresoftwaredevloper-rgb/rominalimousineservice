@@ -1,114 +1,143 @@
 import jwt from 'jsonwebtoken';
 import Ride from '../models/Ride.js';
 import User from '../models/User.js';
+import { updateLocation } from '../services/driverService.js';
+import { RIDE_VIEW_ROLES } from '../utils/roles.js';
+
+const ACTIVE_RIDE_TTL_MS = 15000;
+
+const validCoord = (lat, lng) =>
+  Number.isFinite(Number(lat)) &&
+  Number.isFinite(Number(lng)) &&
+  Math.abs(Number(lat)) <= 90 &&
+  Math.abs(Number(lng)) <= 180;
+
+const isLiveRideViewer = (role) => RIDE_VIEW_ROLES.includes(role);
 
 export const initSocket = (io) => {
   // JWT auth for sockets — a verified access token is required to act as a
-    // specific user. Sockets without a token stay anonymous (public pages) and
-    // can never join user/ride rooms or emit locations.
-    io.use(async (socket, next) => {
-      try {
-        const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
-        if (token) {
-          const payload = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-          const user = await User.findById(payload.id).select('role isSuspended tokenVersion');
-          if (!user || user.isSuspended || user.tokenVersion !== payload.v) return next(new Error('UNAUTHORIZED'));
-          socket.userId = String(user._id);
-          socket.role = user.role;
-          socket.tokenPayload = payload;
-          return next();
+  // specific user. Sockets without a token stay anonymous (public pages) and
+  // can never join user/ride rooms or emit locations.
+  io.use(async (socket, next) => {
+    try {
+      const token =
+        socket.handshake.auth?.token ||
+        socket.handshake.headers?.authorization?.replace('Bearer ', '');
+      if (token) {
+        const payload = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+        const user = await User.findById(payload.id).select(
+          'role isSuspended isApproved tokenVersion',
+        );
+        if (!user || user.isSuspended || user.tokenVersion !== payload.v) {
+          return next(new Error('UNAUTHORIZED'));
         }
-        return next(); // anon for public pages
-      } catch {
-        return next(new Error('UNAUTHORIZED'));
+        socket.userId = String(user._id);
+        socket.role = user.role;
+        socket.isApproved = !!user.isApproved;
+        return next();
       }
-    });
+      return next(); // anon for public pages
+    } catch {
+      return next(new Error('UNAUTHORIZED'));
+    }
+  });
 
   io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id} user:${socket.userId || 'anon'} role:${socket.role || '-'}`);
+    const joinRoleRooms = () => {
+      if (socket.userId) socket.join(`user:${socket.userId}`);
+      // An unapproved driver may connect (to see their status) but must never
+      // appear in the drivers room or receive ride offers.
+      if (socket.role === 'driver' && socket.isApproved) socket.join('drivers');
+      if (isLiveRideViewer(socket.role)) socket.join('admins');
+    };
 
-    // Associate: re-auth with a fresh token while the socket stays open
+    const leaveRoleRooms = () => {
+      if (socket.userId) socket.leave(`user:${socket.userId}`);
+      socket.leave('drivers');
+      socket.leave('admins');
+    };
+
     const associate = async (payload = {}) => {
       const { token } = payload || {};
-      if (token) {
-        try {
-          const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-          const user = await User.findById(decoded.id).select('role isSuspended tokenVersion');
-          if (!user || user.isSuspended || user.tokenVersion !== decoded.v) return;
-          if (socket.userId) socket.leave(`user:${socket.userId}`);
-          socket.userId = String(user._id);
-          socket.role = user.role;
-          socket.join(`user:${socket.userId}`);
-          if (socket.role === 'driver') socket.join('drivers');
-          if (['admin', 'super_admin', 'dispatcher', 'manager'].includes(socket.role)) socket.join('admins');
-        } catch { return; }
-      }
-      if (socket.userId) {
-        socket.join(`user:${socket.userId}`);
-        if (socket.role === 'driver') socket.join('drivers');
-        if (['admin', 'super_admin', 'dispatcher', 'manager'].includes(socket.role)) socket.join('admins');
+      if (!token) return;
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+        const user = await User.findById(decoded.id).select(
+          'role isSuspended isApproved tokenVersion',
+        );
+        if (!user || user.isSuspended || user.tokenVersion !== decoded.v) return;
+        leaveRoleRooms();
+        socket.userId = String(user._id);
+        socket.role = user.role;
+        socket.isApproved = !!user.isApproved;
+        socket.data.activeRide = null;
+        joinRoleRooms();
+      } catch {
+        /* invalid re-auth is ignored; existing identity stays */
       }
     };
 
-    // auto-join rooms for JWT-authenticated sockets on connect
-    if (socket.userId) {
-      socket.join(`user:${socket.userId}`);
-      if (socket.role === 'driver') socket.join('drivers');
-      if (['admin', 'super_admin', 'dispatcher', 'manager'].includes(socket.role)) socket.join('admins');
-    }
+    if (socket.userId) joinRoleRooms();
     socket.on('authenticate', associate);
 
     // Join a ride-scoped room so passenger + driver share live events. Only the
-    // ride's passenger, its assigned driver, or an admin may join (location data
-    // flows through these rooms, so unauthenticated joins are rejected).
+    // ride's passenger, its assigned driver, or a live-dispatch role may join
+    // (location data flows through these rooms).
     socket.on('ride:join', async ({ rideId } = {}) => {
       if (!rideId || !socket.userId) return;
       const ride = await Ride.findOne({ _id: rideId }).select('passenger driver').lean();
       if (!ride) return;
-      const isAdmin = socket.role === 'admin';
       const isParticipant =
         String(ride.passenger) === String(socket.userId) ||
         (ride.driver && String(ride.driver) === String(socket.userId));
-      if (isAdmin || isParticipant) socket.join(`ride:${rideId}`);
+      if (isLiveRideViewer(socket.role) || isParticipant) socket.join(`ride:${rideId}`);
     });
 
-    // Driver publishes position -> forward to the ride room the driver is serving
-    // Per-socket cache of the user's active ride.
-//
-// driver:location and passenger:location fire every 2 seconds per connected
-// user, and each one did a Ride.findOne — 30 queries/min/user purely to
-// discover a ride id that changes only when a ride starts or ends. Cache it on
-// the socket and invalidate on any ride lifecycle event.
-const ACTIVE_RIDE_TTL_MS = 15000;
-const activeRideCache = (socket, userId, role) => {
-  const cached = socket.data?.activeRide;
-  const now = Date.now();
-  if (cached && cached.role === role && now - cached.at < ACTIVE_RIDE_TTL_MS) {
-    return cached.rideId;
-  }
-  return null;
-};
-const setActiveRideCache = (socket, role, rideId) => {
-  socket.data = socket.data || {};
-  socket.data.activeRide = { role, rideId, at: Date.now() };
-};
-socket.on('driver:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) => {
-      const driverId = socket.userId;
-      if (!driverId || lat == null || lng == null) return;
+    const activeRideCache = (role) => {
+      const cached = socket.data?.activeRide;
+      if (cached && cached.role === role && Date.now() - cached.at < ACTIVE_RIDE_TTL_MS) {
+        return cached;
+      }
+      return null;
+    };
+    const setActiveRideCache = (role, rideId) => {
+      socket.data = socket.data || {};
+      socket.data.activeRide = { role, rideId, at: Date.now() };
+    };
 
-      let rideId = activeRideCache(socket, driverId, 'driver');
-      if (rideId === null) {
+    // Driver publishes position. It is persisted (so dispatch/nearby searches
+    // see live positions) and forwarded only to the ride room they are serving.
+    socket.on('driver:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) => {
+      const driverId = socket.userId;
+      if (!driverId || socket.role !== 'driver' || !socket.isApproved) return;
+      if (!validCoord(lat, lng)) return;
+      // Server-side throttle: a misbehaving client must not turn every emitted
+      // sample into a Mongo upsert. The portal already sends 1 per 2 s.
+      const now = Date.now();
+      if (now - (socket.data.lastDriverLocationAt || 0) < 2000) return;
+      socket.data.lastDriverLocationAt = now;
+
+      const position = {
+        lat: Number(lat),
+        lng: Number(lng),
+        heading: Number(heading) || 0,
+        speed: Number(speed) || 0,
+      };
+
+      updateLocation(driverId, position).catch(() => {});
+
+      let cached = activeRideCache('driver');
+      if (!cached) {
         const activeRide = await Ride.findOne({
           driver: driverId,
           status: { $in: ['accepted', 'arriving', 'in_progress'] },
         }).select('_id').lean();
-        rideId = activeRide?._id || null;
-        setActiveRideCache(socket, 'driver', rideId);
+        cached = { rideId: activeRide?._id || null };
+        setActiveRideCache('driver', cached.rideId);
       }
 
-      const payload = { driverId, lat, lng, heading, speed };
-      if (rideId) {
-        io.to(`ride:${rideId}`).emit('driver:location', payload);
+      if (cached.rideId) {
+        io.to(`ride:${cached.rideId}`).emit('driver:location', { driverId, ...position });
       }
     });
 
@@ -116,38 +145,68 @@ socket.on('driver:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) =
     // driver can find them live (mirror of driver:location).
     socket.on('passenger:location', async ({ lat, lng, heading = 0, speed = 0 } = {}) => {
       const passengerId = socket.userId;
-      if (!passengerId || lat == null || lng == null) return;
+      if (!passengerId || socket.role !== 'passenger') return;
+      if (!validCoord(lat, lng)) return;
+      const now = Date.now();
+      if (now - (socket.data.lastPassengerLocationAt || 0) < 2000) return;
+      socket.data.lastPassengerLocationAt = now;
 
-      let rideId = activeRideCache(socket, passengerId, 'passenger');
-      if (rideId === null) {
+      const position = {
+        lat: Number(lat),
+        lng: Number(lng),
+        heading: Number(heading) || 0,
+        speed: Number(speed) || 0,
+      };
+
+      let cached = activeRideCache('passenger');
+      if (!cached) {
         const activeRide = await Ride.findOne({
           passenger: passengerId,
           status: { $in: ['accepted', 'arriving', 'in_progress'] },
         }).select('_id').lean();
-        rideId = activeRide?._id || null;
-        setActiveRideCache(socket, 'passenger', rideId);
+        cached = { rideId: activeRide?._id || null };
+        setActiveRideCache('passenger', cached.rideId);
       }
 
-      const payload = { passengerId, lat, lng, heading, speed };
-      if (rideId) {
-        io.to(`ride:${rideId}`).emit('passenger:location', payload);
+      if (cached.rideId) {
+        io.to(`ride:${cached.rideId}`).emit('passenger:location', { passengerId, ...position });
       }
     });
 
-    // Uber-like live chat: passenger ↔ driver in ride room (only participants)
+    // Uber-like live chat: passenger ↔ driver in ride room (only participants).
+    // The document is capped at the newest 200 messages so a long ride cannot
+    // grow toward Mongo's 16MB limit.
     socket.on('ride:message', async ({ rideId, text } = {}) => {
       if (!rideId || !text || !socket.userId) return;
+      const now = Date.now();
+      if (now - (socket.data.lastMessageAt || 0) < 1000) return;
       const trimmed = String(text).trim().slice(0, 500);
       if (!trimmed) return;
+      socket.data.lastMessageAt = now;
       const ride = await Ride.findOne({ _id: rideId }).select('passenger driver').lean();
       if (!ride) return;
-      const isParticipant = String(ride.passenger) === String(socket.userId) || (ride.driver && String(ride.driver) === String(socket.userId));
+      const isParticipant =
+        String(ride.passenger) === String(socket.userId) ||
+        (ride.driver && String(ride.driver) === String(socket.userId));
       if (!isParticipant) return;
-      await Ride.findByIdAndUpdate(rideId, { $push: { messages: { sender: socket.userId, text: trimmed, at: new Date() } } });
-      io.to(`ride:${rideId}`).emit('ride:message', { rideId, sender: socket.userId, text: trimmed, at: new Date(), senderRole: socket.role });
-    });
 
-    // Removed insecure client-triggered ride:cancel broadcast — cancellations must go via REST POST /api/rides/:id/cancel (validated in rideService.cancelRide)
+      const at = new Date();
+      await Ride.findByIdAndUpdate(rideId, {
+        $push: {
+          messages: {
+            $each: [{ sender: socket.userId, text: trimmed, at }],
+            $slice: -200,
+          },
+        },
+      });
+      io.to(`ride:${rideId}`).emit('ride:message', {
+        rideId,
+        sender: socket.userId,
+        text: trimmed,
+        at,
+        senderRole: socket.role,
+      });
+    });
 
     socket.on('disconnect', () => {
       console.log(`Socket disconnected: ${socket.id}`);

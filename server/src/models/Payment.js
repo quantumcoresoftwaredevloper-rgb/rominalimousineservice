@@ -14,7 +14,17 @@ const paymentSchema = new mongoose.Schema(
     provider: { type: String, enum: ['sandbox', 'stripe', 'cash'], default: 'sandbox' },
     status: {
       type: String,
-      enum: ['pending', 'succeeded', 'failed', 'refunded', 'cash'],
+      enum: [
+        'pending',
+        'succeeded',
+        'failed',
+        'refunded',
+        'refunding',
+        'cash_due',
+        'cash_collected',
+        // Legacy rows written before cash was split into due/collected.
+        'cash',
+      ],
       default: 'pending',
     },
     // Set only on success; sparse so pending/failed payments don't collide.
@@ -25,7 +35,11 @@ const paymentSchema = new mongoose.Schema(
     failureReason: { type: String, default: '' },
     cardLast4: { type: String, default: '' },
     refundedAt: Date,
-    refundTransactionId: { type: String, default: '' },  },
+    refundTransactionId: { type: String, default: '' },
+    cashDueAt: Date,
+    cashCollectedAt: Date,
+    cashCollectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
   { timestamps: true }
 );
 
@@ -56,7 +70,9 @@ paymentSchema.index(
   {
     unique: true,
     name: 'ride_settled_unique',
-    partialFilterExpression: { status: { $in: ['succeeded', 'cash'] } },
+    partialFilterExpression: {
+      status: { $in: ['succeeded', 'cash', 'cash_due', 'cash_collected'] },
+    },
   },
 );
 

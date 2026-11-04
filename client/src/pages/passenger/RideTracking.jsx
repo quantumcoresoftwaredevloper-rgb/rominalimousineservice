@@ -41,6 +41,7 @@ const pickupIcon = L.divIcon({
 
 const STATUS_TEXT = {
   pending: 'Finding you a driver…',
+  scheduled: 'Scheduled pickup',
   accepted: 'Driver on the way',
   arriving: 'Driver arriving',
   in_progress: 'On your way',
@@ -327,15 +328,27 @@ export default function RideTracking() {
             </dl>
           </div>
 
-          {['pending', 'accepted', 'arriving'].includes(status) && (
+          {status === 'scheduled' && ride.scheduledAt && (
+            <div className="rounded-2xl border border-brand-200 bg-brand-50 p-5 text-sm">
+              <p className="font-semibold text-brand-700">Scheduled reservation</p>
+              <p className="mt-1 text-ink">
+                Pickup {new Date(ride.scheduledAt).toLocaleString()}
+              </p>
+              <p className="mt-1 text-muted">
+                Dispatch releases this reservation to chauffeurs 30 minutes before pickup.
+              </p>
+            </div>
+          )}
+
+          {['pending', 'scheduled', 'accepted', 'arriving'].includes(status) && (
             <Button variant="danger" className="w-full" onClick={handleCancel}>
-              Cancel ride
+              Cancel {status === 'scheduled' ? 'reservation' : 'ride'}
             </Button>
           )}
 
-          {status === 'pending' && (
+          {['pending', 'scheduled'].includes(status) && (
             <Button variant="secondary" className="w-full" onClick={() => setShowEdit(true)}>
-              Edit ride
+              Edit {status === 'scheduled' ? 'reservation' : 'ride'}
             </Button>
           )}
 
@@ -348,11 +361,16 @@ export default function RideTracking() {
                     ${(ride.fare.final || ride.fare.estimated || 0).toFixed(2)}
                   </p>
                 </div>
-                {ride.payment?.status === 'paid' && (
+                {['paid', 'cash_collected'].includes(ride.payment?.status) && (
                   <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
                     ride.payment?.method === 'cash' ? 'bg-gold-100 text-gold-700' : 'bg-green-50 text-green-700'
                   }`}>
-                    {ride.payment?.method === 'cash' ? 'Cash' : 'Paid'}
+                    {ride.payment?.method === 'cash' ? 'Cash paid' : 'Paid'}
+                  </span>
+                )}
+                {['cash_due', 'cash'].includes(ride.payment?.status) && (
+                  <span className="rounded-full bg-gold-100 px-3 py-1 text-xs font-semibold text-gold-700">
+                    Cash due
                   </span>
                 )}
                 {ride.payment?.status === 'refunded' && (
@@ -371,6 +389,12 @@ export default function RideTracking() {
                   Pay ${(ride.fare.final || ride.fare.estimated || 0).toFixed(2)}
                 </Button>
               )}
+              {['cash_due', 'cash'].includes(ride.payment?.status) && (
+                <p className="mt-3 rounded-xl bg-gold-50 px-4 py-3 text-sm text-ink">
+                  Pay <b>${(ride.fare.final || ride.fare.estimated || 0).toFixed(2)}</b> in cash
+                  to your chauffeur. The trip is marked cash-due until they record collection.
+                </p>
+              )}
               {ride.payment?.status === 'paid' && ride.payment?.method !== 'cash' && (
                 <>
                   <Button variant="secondary" className="mt-3 w-full" onClick={()=>setShowRefund(true)}>
@@ -379,13 +403,13 @@ export default function RideTracking() {
                   {showRefund && (
                     <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
                       <p className="text-sm font-medium text-amber-800">Report Issue — Request Refund</p>
-                      <textarea value={refundReason} onChange={e=>setRefundReason(e.target.value)} placeholder="Reason for $27.70 refund — e.g., overcharged, driver issue" className="mt-2 w-full rounded-xl border border-amber-300 bg-white p-2 text-sm" rows={3} />
+                      <textarea value={refundReason} onChange={e=>setRefundReason(e.target.value)} placeholder="Reason for refund — e.g., overcharged, driver issue" className="mt-2 w-full rounded-xl border border-amber-300 bg-white p-2 text-sm" rows={3} />
                       <div className="mt-2 flex gap-2"><button onClick={()=>setShowRefund(false)} className="flex-1 rounded-full border border-accent-200 py-2 text-sm">Cancel</button><button onClick={handleRefund} className="flex-1 rounded-full bg-amber-600 py-2 text-sm font-semibold text-white">Send Request</button></div>
                     </div>
                   )}
                 </>
               )}
-              {ride.status === 'completed' && ride.payment?.status === 'paid' && !ride.rating?.score && (
+              {ride.status === 'completed' && !ride.rating?.score && (
                 <Button className="mt-3 w-full" onClick={()=>setShowRating(true)}>
                   Rate your driver ★
                 </Button>
@@ -404,17 +428,23 @@ export default function RideTracking() {
             <PaymentModal
               ride={ride}
               onClose={() => setShowPay(false)}
-              onPaid={(payment) =>
+              onPaid={(payment) => {
+                const nextStatus =
+                  payment.status === 'succeeded' ? 'paid' :
+                  payment.status === 'cash_collected' ? 'cash_collected' :
+                  payment.status === 'cash_due' || payment.status === 'cash' ? 'cash_due' :
+                  payment.status;
                 setRide((r) => ({
                   ...r,
                   payment: {
                     ...r.payment,
-                    status: 'paid',
+                    status: nextStatus,
                     method: payment.method,
                     transactionId: payment.transactionId,
                   },
-                }))
-              }
+                }));
+                setShowPay(false);
+              }}
             />
           )}
 

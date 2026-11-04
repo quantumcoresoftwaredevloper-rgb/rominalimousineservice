@@ -22,8 +22,8 @@ const WHY_US = [
   },
   {
     icon: Plane,
-    title: 'Flight Tracking',
-    desc: 'We monitor your flight in real time and adjust gate pickups automatically. No penalty charges for delayed arrivals, ever.',
+    title: 'Flight-Aware Dispatch',
+    desc: 'Share your flight number when booking so dispatch can coordinate around your arrival. Live automatic tracking is not enabled.',
   },
   {
     icon: CarFront,
@@ -77,7 +77,7 @@ export default function About() {
             </p>
             <p className="mt-4 text-base leading-relaxed text-muted">
               With highly synchronized fleet staging, a professional chauffeur is staged and waiting
-              at BWI the moment you land. We track your flight in real time, adjust gate
+              at BWI the moment you land. Share your flight details so dispatch can coordinate
               pickups automatically and never charge for delays — because your peace of mind is the
               standard we measure ourselves against.
             </p>

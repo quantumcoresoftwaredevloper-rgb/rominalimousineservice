@@ -4,22 +4,38 @@ import { motion } from 'framer-motion';
 import { LayoutDashboard, Radio, Map, CalendarDays, Users, Car, Wallet, BarChart3, LifeBuoy, Bell, ShieldCheck, Settings, Globe, Moon, Sun, Menu, X, LogOut, Phone } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext.jsx';
 
-const NAV = [
-  { to: '/admin', label: 'Overview', icon: LayoutDashboard, end: true },
-  { to: '/admin/dispatch', label: 'Dispatch', icon: Radio },
-  { to: '/admin/operations', label: 'Live Map', icon: Map },
+type StaffRole = 'super_admin' | 'dispatcher' | 'manager' | 'finance' | 'support';
+
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  end?: boolean;
+  roles?: StaffRole[];
+};
+
+// `roles: undefined` means all staff. Keep this list in step with the
+// permissions in server/src/utils/roles.js — hidden links are defence in depth,
+// but the API remains the authority.
+const NAV: NavItem[] = [
+  { to: '/admin', label: 'Overview', icon: LayoutDashboard, end: true, roles: ['super_admin', 'dispatcher', 'manager', 'finance'] },
+  { to: '/admin/dispatch', label: 'Dispatch', icon: Radio, roles: ['super_admin', 'dispatcher', 'manager'] },
+  { to: '/admin/operations', label: 'Live Map', icon: Map, roles: ['super_admin', 'dispatcher', 'manager', 'support'] },
   { to: '/admin/reservations', label: 'Reservations', icon: CalendarDays },
-  { to: '/admin/drivers', label: 'Drivers', icon: Car },
+  { to: '/admin/drivers', label: 'Drivers', icon: Car, roles: ['super_admin', 'dispatcher', 'manager', 'support'] },
   { to: '/admin/passengers', label: 'Passengers', icon: Users },
-  { to: '/admin/fleet', label: 'Fleet', icon: Car },
-  { to: '/admin/website', label: 'Website', icon: Globe },
-  { to: '/admin/finance', label: 'Finance', icon: Wallet },
-  { to: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
-  { to: '/admin/support', label: 'Support', icon: LifeBuoy },
+  { to: '/admin/fleet', label: 'Fleet', icon: Car, roles: ['super_admin', 'manager'] },
+  { to: '/admin/website', label: 'Website', icon: Globe, roles: ['super_admin'] },
+  { to: '/admin/finance', label: 'Finance', icon: Wallet, roles: ['super_admin', 'manager', 'finance'] },
+  { to: '/admin/analytics', label: 'Analytics', icon: BarChart3, roles: ['super_admin', 'dispatcher', 'manager', 'finance'] },
+  { to: '/admin/support', label: 'Support', icon: LifeBuoy, roles: ['super_admin', 'dispatcher', 'manager', 'support'] },
   { to: '/admin/notifications', label: 'Notifications', icon: Bell },
-  { to: '/admin/audit', label: 'Audit Log', icon: ShieldCheck },
-  { to: '/admin/settings', label: 'Settings', icon: Settings },
+  { to: '/admin/audit', label: 'Audit Log', icon: ShieldCheck, roles: ['super_admin', 'manager', 'finance'] },
+  { to: '/admin/settings', label: 'Settings', icon: Settings, roles: ['super_admin'] },
 ];
+
+const effectiveRole = (role?: string): StaffRole =>
+  (role === 'admin' ? 'super_admin' : role) as StaffRole;
 
 export default function CrmShell() {
   const [collapsed, setCollapsed] = useState(false);
@@ -27,6 +43,8 @@ export default function CrmShell() {
   const [dark, setDark] = useState(false); // default light like http://localhost:5173/ white; user toggles to dark explicitly
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const role = effectiveRole(user?.role);
+  const visibleNav = NAV.filter((item) => !item.roles || item.roles.includes(role));
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -75,7 +93,7 @@ export default function CrmShell() {
       </div>
 
       <nav className="flex-1 overflow-y-auto bg-white px-2 py-3 dark:bg-accent-900">
-        {NAV.map(({ to, label, icon: Icon, end }) => (
+        {visibleNav.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
             to={to}

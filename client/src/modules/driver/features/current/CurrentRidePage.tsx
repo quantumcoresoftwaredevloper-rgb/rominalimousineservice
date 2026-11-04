@@ -31,7 +31,7 @@ export default function CurrentRidePage() {
     try { await updateRideStatus(active._id, { status }); refetch(); } catch {} finally { setBusy(''); }
   };
 
-  if (!active) return <Card><CardTitle>Current Ride</CardTitle><p className="mt-3 text-sm text-muted">No active ride — accept a request to see passenger, route, ETA and controls here. Map shows driver→passenger→dropoff with traffic.</p></Card>;
+  if (!active) return <Card><CardTitle>Current Ride</CardTitle><p className="mt-3 text-sm text-muted">No active ride — accept a request to see the passenger, route, fare and trip controls here.</p></Card>;
   const center:[number,number]=[active.pickup.lat, active.pickup.lng];
   return (
     <div className="space-y-6">
@@ -82,7 +82,7 @@ export default function CurrentRidePage() {
               <button onClick={()=> { setShowChat(v=>!v); setTimeout(()=> chatRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100); }} className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full border px-3 py-2.5 text-sm font-semibold ${showChat ? 'bg-brand-600 border-brand-600 text-white' : 'bg-white border-accent-200 hover:bg-accent-50 dark:border-white/10 dark:bg-transparent dark:text-white'}`}>
                 <MessageCircle className="h-4 w-4" /> {showChat ? 'Hide Chat' : 'Chat'}
               </button>
-              <a href={`https://www.google.com/maps/dir/?api=1&destination=${active.pickup.lat},${active.pickup.lng}`} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full btn-brand-gradient px-3 py-2.5 text-sm font-semibold text-white">
+              <a href={`https://www.google.com/maps/dir/?api=1&destination=${active.status === 'in_progress' ? active.dropoff.lat : active.pickup.lat},${active.status === 'in_progress' ? active.dropoff.lng : active.pickup.lng}`} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full btn-brand-gradient px-3 py-2.5 text-sm font-semibold text-white">
                 <Navigation className="h-4 w-4" /> Navigate
               </a>
             </div>
@@ -91,11 +91,11 @@ export default function CurrentRidePage() {
               <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted">Trip Progress</p>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { label:'Arrived', status:'arriving', done: ['arriving','in_progress','completed'].includes(active.status) },
-                  { label:'Start Trip', status:'in_progress', done: ['in_progress','completed'].includes(active.status) },
-                  { label:'Complete', status:'completed', done: active.status==='completed' },
+                  { label:'Arrived', status:'arriving', done: ['arriving','in_progress','completed'].includes(active.status), enabled: active.status==='accepted' },
+                  { label:'Start Trip', status:'in_progress', done: ['in_progress','completed'].includes(active.status), enabled: active.status==='arriving' },
+                  { label:'Complete', status:'completed', done: active.status==='completed', enabled: active.status==='in_progress' },
                 ].map(b=> (
-                  <button key={b.status} onClick={()=>go(b.status)} disabled={!!busy || b.done} className={`min-h-11 rounded-full border py-2.5 text-sm font-semibold transition-all ${b.done ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-950 dark:border-green-800' : 'bg-white border-accent-200 hover:bg-accent-50 dark:border-white/10 dark:bg-transparent dark:text-white'} disabled:opacity-50`}>
+                  <button key={b.status} onClick={()=>go(b.status)} disabled={!!busy || b.done || !b.enabled} className={`min-h-11 rounded-full border py-2.5 text-sm font-semibold transition-all ${b.done ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-950 dark:border-green-800' : 'bg-white border-accent-200 hover:bg-accent-50 dark:border-white/10 dark:bg-transparent dark:text-white'} disabled:opacity-50`}>
                     {busy===b.status ? '...' : b.done ? '✓ ' + b.label : b.label}
                   </button>
                 ))}
@@ -111,12 +111,12 @@ export default function CurrentRidePage() {
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               <Marker position={[active.pickup.lat, active.pickup.lng]} icon={pickupIcon}><Popup>Pickup</Popup></Marker>
               <Marker position={[active.dropoff.lat, active.dropoff.lng]} icon={dropoffFlagIcon}><Popup>Dropoff</Popup></Marker>
-              <Polyline positions={[[active.pickup.lat,active.pickup.lng],[active.dropoff.lat,active.dropoff.lng]] as any} pathOptions={{color:'#d4af37', weight:5, opacity:0.9}} />
+              <Polyline positions={(active.route?.length ? active.route.map((p:any)=>[p.lat,p.lng]) : [[active.pickup.lat,active.pickup.lng],[active.dropoff.lat,active.dropoff.lng]]) as any} pathOptions={{color:'#d4af37', weight:5, opacity:0.9}} />
             </MapContainer>
             <div className="flex items-center gap-2 bg-white px-4 py-2.5 text-xs dark:bg-accent-900 border-t border-accent-200 dark:border-white/10">
               <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-green-500" /> Pickup</span>
               <span className="flex items-center gap-1.5"><Flag className="h-3 w-3 text-brand-700" /> Dropoff</span>
-              <span className="ml-auto font-medium text-brand-700">{active.fare.distanceKm}km • Live tracking</span>
+              <span className="ml-auto font-medium text-brand-700">{active.fare.distanceKm}km • {active.fare.durationMin}min</span>
             </div>
           </div>
 

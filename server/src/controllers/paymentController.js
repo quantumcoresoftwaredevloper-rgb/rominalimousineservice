@@ -18,12 +18,21 @@ export const payRide = asyncHandler(async (req, res) => {
   const payment = await paymentService.processPayment(req.user._id, rideId, req.body);
   const io = req.app.get('io');
 
-  if (payment.status === 'cash') {
+  if (['cash', 'cash_due'].includes(payment.status)) {
     await notify({
       user: req.user._id,
       type: 'payment',
-      title: 'Cash payment',
-      message: `Pay $${payment.amount.toFixed(2)} in cash to your driver.`,
+      title: 'Cash payment due',
+      message: `Pay $${payment.amount.toFixed(2)} in cash to your chauffeur at the end of the trip.`,
+      data: { rideId, paymentId: payment._id },
+      io,
+    });
+  } else if (payment.status === 'cash_collected') {
+    await notify({
+      user: req.user._id,
+      type: 'payment',
+      title: 'Cash recorded',
+      message: `Your cash payment of $${payment.amount.toFixed(2)} has been recorded.`,
       data: { rideId, paymentId: payment._id },
       io,
     });
@@ -109,4 +118,34 @@ export const decideRefund = asyncHandler(async (req, res) => {
     io,
   });
   res.json(result);
+});
+
+// POST /api/payments/:id/collect-cash — assigned driver confirms cash handed over.
+export const collectCash = asyncHandler(async (req, res) => {
+  const payment = await paymentService.collectCash(req.params.id, req.user._id);
+  const io = req.app.get('io');
+  await notify({
+    user: payment.user,
+    type: 'payment',
+    title: 'Cash received',
+    message: `Cash payment of $${payment.amount.toFixed(2)} was recorded by your chauffeur.`,
+    data: { rideId: payment.ride, paymentId: payment._id },
+    io,
+  });
+  res.json({ payment });
+});
+
+// POST /api/rides/:rideId/collect-cash — assigned driver confirms cash for a ride.
+export const collectCashForRide = asyncHandler(async (req, res) => {
+  const payment = await paymentService.collectCashForRide(req.params.rideId, req.user._id);
+  const io = req.app.get('io');
+  await notify({
+    user: payment.user,
+    type: 'payment',
+    title: 'Cash received',
+    message: `Cash payment of $${payment.amount.toFixed(2)} was recorded by your chauffeur.`,
+    data: { rideId: payment.ride, paymentId: payment._id },
+    io,
+  });
+  res.json({ payment });
 });

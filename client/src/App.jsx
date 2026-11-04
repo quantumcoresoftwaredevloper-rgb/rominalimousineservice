@@ -90,6 +90,12 @@ const RequireRole = ({ role, roles, children }) => {
   return children;
 };
 
+const CrmHome = () => {
+  const { user } = useAuth();
+  if (user?.role === 'support') return <Navigate to="/admin/support" replace />;
+  return <OverviewPage />;
+};
+
 const Fallback = () => <div className="flex h-[60vh] items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" /></div>;
 
 export default function App() {
@@ -112,20 +118,20 @@ export default function App() {
       <Suspense fallback={<Fallback />}>
         <Routes>
           <Route path="/admin" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','finance','support']}><CrmShell /></RequireRole>}>
-            <Route index element={<OverviewPage />} />
-            <Route path="dispatch" element={<DispatchBoard />} />
-            <Route path="operations" element={<LiveMapPage />} />
-            <Route path="reservations" element={<ReservationsPage />} />
-            <Route path="drivers" element={<DriversPage />} />
-            <Route path="passengers" element={<PassengersPage />} />
-            <Route path="fleet" element={<FleetPage />} />
-            <Route path="website" element={<WebsitePage />} />
-            <Route path="finance" element={<FinancePage />} />
-            <Route path="analytics" element={<AnalyticsPage />} />
-            <Route path="support" element={<SupportPage />} />
-            <Route path="notifications" element={<NotificationsPage />} />
-            <Route path="audit" element={<AuditPage />} />
-            <Route path="settings" element={<SettingsPage />} />
+            <Route index element={<CrmHome />} />
+            <Route path="dispatch" element={<RequireRole roles={['admin','super_admin','dispatcher','manager']}><DispatchBoard /></RequireRole>} />
+            <Route path="operations" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','support']}><LiveMapPage /></RequireRole>} />
+            <Route path="reservations" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','finance','support']}><ReservationsPage /></RequireRole>} />
+            <Route path="drivers" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','support']}><DriversPage /></RequireRole>} />
+            <Route path="passengers" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','finance','support']}><PassengersPage /></RequireRole>} />
+            <Route path="fleet" element={<RequireRole roles={['admin','super_admin','manager']}><FleetPage /></RequireRole>} />
+            <Route path="website" element={<RequireRole roles={['admin','super_admin']}><WebsitePage /></RequireRole>} />
+            <Route path="finance" element={<RequireRole roles={['admin','super_admin','manager','finance']}><FinancePage /></RequireRole>} />
+            <Route path="analytics" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','finance']}><AnalyticsPage /></RequireRole>} />
+            <Route path="support" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','support']}><SupportPage /></RequireRole>} />
+            <Route path="notifications" element={<RequireRole roles={['admin','super_admin','dispatcher','manager','finance','support']}><NotificationsPage /></RequireRole>} />
+            <Route path="audit" element={<RequireRole roles={['admin','super_admin','manager','finance']}><AuditPage /></RequireRole>} />
+            <Route path="settings" element={<RequireRole roles={['admin','super_admin']}><SettingsPage /></RequireRole>} />
           </Route>
           <Route path="/crm" element={<Navigate to="/admin" replace />} />
           <Route path="/crm/*" element={<Navigate to="/admin" replace />} />

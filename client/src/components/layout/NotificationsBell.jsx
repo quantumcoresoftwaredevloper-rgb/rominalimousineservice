@@ -18,7 +18,10 @@ const TYPE_ICON = {
 };
 
 const dataUrl = (n) => {
-  if (n.data?.rideId) return `/rides/track/${n.data.rideId}`;
+  const id = n.data?.rideId;
+  if (id && /^[a-f0-9]{24}$/i.test(String(id))) {
+    return `/rides/track/${encodeURIComponent(String(id))}`;
+  }
   if (n.data?.paymentId) return '/profile';
   return null;
 };

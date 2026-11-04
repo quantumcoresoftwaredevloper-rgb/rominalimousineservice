@@ -14,7 +14,7 @@ import { useSiteContent } from '../../hooks/useSiteContent.js';
 const PROMISES = [
   { icon: Timer, title: 'On-time guaranteed', desc: 'Your chauffeur is staged and ready ahead of schedule, every single time.' },
   { icon: BadgeDollarSign, title: 'Fixed rate pricing', desc: 'What you are quoted is what you pay — zero surge, no hidden fees.' },
-  { icon: Plane, title: 'Flight tracking', desc: 'Gate pickups adjust automatically to your flight. No charges for delays.' },
+  { icon: Plane, title: 'Flight details', desc: 'Add your flight number at booking so dispatch can coordinate arrival timing.' },
   { icon: CarFront, title: 'Luxury fleet', desc: 'Immaculate late-model sedans, SUVs & Sprinters, detailed before every dispatch.' },
 ];
 

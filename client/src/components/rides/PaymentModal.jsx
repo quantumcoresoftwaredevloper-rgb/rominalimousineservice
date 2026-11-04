@@ -88,7 +88,7 @@ export default function PaymentModal({ ride, onClose, onPaid }) {
     try {
       const { data } = await payRide(ride._id, { method: 'cash' });
       setResult(data.payment);
-      if (data.payment.status === 'cash') onPaid?.(data.payment);
+      if (['cash', 'cash_due'].includes(data.payment.status)) onPaid?.(data.payment);
     } catch (err) {
       setError(err.response?.data?.message || 'Could not record the cash payment.');
     } finally {
@@ -124,7 +124,7 @@ export default function PaymentModal({ ride, onClose, onPaid }) {
             <div className="rounded-xl bg-gold-50 p-4 text-sm text-ink">
               <p className="font-semibold">Online payments are currently disabled</p>
               <p className="mt-1">
-                Pay by cash at pickup, or call {supportPhone || 'support'} to arrange payment.
+                Pay your chauffeur in cash at the end of the trip, or call {supportPhone || 'support'} to arrange payment.
               </p>
             </div>
             <div className="mt-4 flex gap-2">
@@ -133,21 +133,21 @@ export default function PaymentModal({ ride, onClose, onPaid }) {
           </div>
         ) : result ? (
           <div className="mt-6">
-            {result.status === 'cash' ? (
+            {['cash', 'cash_due'].includes(result.status) ? (
               <div className="rounded-xl bg-gold-50 p-4 text-sm text-ink">
                 <p className="flex items-center gap-2 font-semibold">
-                  <Banknote className="h-4 w-4 text-gold-500" /> Cash payment
+                  <Banknote className="h-4 w-4 text-gold-500" /> Cash payment due
                 </p>
                 <p className="mt-1">
                   No card was charged. Please pay <b>${result.amount.toFixed(2)}</b> in cash to
-                  your driver at the end of your trip.
+                  your chauffeur at the end of your trip.
                 </p>
               </div>
             ) : result.status === 'succeeded' ? (
               <div className="rounded-xl bg-green-50 p-4 text-sm text-green-700">
                 <p className="font-semibold">Payment succeeded</p>
                 <p className="mt-1">Reference: {result.transactionId}</p>
-                <p className="mt-1">A receipt has been sent to your email.</p>
+                <p className="mt-1">Your payment is recorded against this ride.</p>
               </div>
             ) : (
               <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700">
@@ -198,14 +198,14 @@ export default function PaymentModal({ ride, onClose, onPaid }) {
                 <div className="rounded-xl bg-slate-50 p-4 text-sm text-ink">
                   <p className="font-semibold">Pay in cash</p>
                   <p className="mt-1 text-muted">
-                    No card charge now. Keep the exact amount ready and pay your driver in cash
-                    when the trip ends.
+                    No card charge now. Keep the exact amount ready and pay your chauffeur in
+                    cash when the trip ends. The ride is marked cash-due, not paid.
                   </p>
                 </div>
                 <div className="mt-4 flex gap-2">
                   <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
                   <Button loading={loading} onClick={payCash} className="flex-1">
-                    Confirm cash payment
+                    Record cash payment
                   </Button>
                 </div>
               </div>

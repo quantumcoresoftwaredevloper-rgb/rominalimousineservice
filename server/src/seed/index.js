@@ -98,6 +98,17 @@ const seedLocations = async (drivers) => {
 };
 
 const run = async () => {
+  // `seed` deletes every user, driver position and app setting. Never let that
+  // run against a production database by accident.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_PRODUCTION_SEED !== 'true'
+  ) {
+    console.error(
+      'Refusing to seed with NODE_ENV=production. Set ALLOW_PRODUCTION_SEED=true only for a disposable demo database.',
+    );
+    process.exit(1);
+  }
   await connectDB();
   await User.deleteMany({});
   await Location.deleteMany({});

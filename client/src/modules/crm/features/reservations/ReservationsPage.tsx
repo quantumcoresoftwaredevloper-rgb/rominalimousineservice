@@ -5,6 +5,8 @@ import { Modal } from '../../components/ui/Modal';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../../../../services/api.js';
+import { useAuth } from '../../../../context/AuthContext.jsx';
+import { hasPermission } from '../../../../utils/permissions.js';
 
 const STATUSES = ['pending','scheduled','accepted','arriving','in_progress','completed','cancelled','no_show','refunded'];
 const ACTIVE = ['accepted','arriving','in_progress'];
@@ -18,6 +20,9 @@ const vehicleLabel = (t: string = '') =>
   t.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || '—';
 
 export default function ReservationsPage() {
+  const { user } = useAuth();
+  const canDispatch = hasPermission(user?.role, 'rides.dispatch');
+  const canUpdate = hasPermission(user?.role, 'rides.update');
   const qc = useQueryClient();
   const [status, setStatus] = useState('');
   const [q, setQ] = useState('');
@@ -28,7 +33,7 @@ export default function ReservationsPage() {
   const [cancelModal, setCancelModal] = useState<any | null>(null);
   const [cancelReason, setCancelReason] = useState('');
 
-  const driversQuery = useQuery({ queryKey: ['crm','drivers'], queryFn: async () => (await api.get('/crm/drivers')).data });
+  const driversQuery = useQuery({ queryKey: ['crm','drivers'], queryFn: async () => (await api.get('/crm/drivers')).data, enabled: canDispatch });
   const drivers: any[] = (driversQuery.data as any)?.drivers ?? [];
 
   const rides: any[] = (data?.rides ?? []).filter((r: any) =>
@@ -55,7 +60,9 @@ export default function ReservationsPage() {
   const activeCount = rides.filter((r) => ACTIVE.includes(r.status)).length;
   const revenue = rides.filter((r) => r.status === 'completed').reduce((s, r) => s + (r.fare?.final || 0), 0);
 
-  const Actions = ({ r }: { r: any }) => (
+  const Actions = ({ r }: { r: any }) => {
+    if (!canUpdate) return <span className="text-xs text-muted">Read-only</span>;
+    return (
     <div className="flex flex-wrap gap-1.5">
       {ACTIVE.includes(r.status) && <button onClick={() => changeStatus(r, 'completed')} className="rounded-full border border-green-200 px-3 py-1 text-xs font-medium text-green-700 hover:bg-green-50 dark:border-green-900">Complete</button>}
       {ACTIVE.includes(r.status) && <button onClick={() => changeStatus(r, 'no_show')} className="rounded-full border border-accent-200 px-3 py-1 text-xs hover:bg-accent-50 dark:border-accent-700 dark:hover:bg-white/5">No-show</button>}
@@ -63,14 +70,15 @@ export default function ReservationsPage() {
       {['cancelled','no_show'].includes(r.status) && <button onClick={() => changeStatus(r, 'pending')} className="rounded-full border border-accent-200 px-3 py-1 text-xs hover:bg-accent-50 dark:border-accent-700 dark:hover:bg-white/5">Reopen</button>}
       {r.status !== 'refunded' && <button onClick={() => openFare(r)} className="rounded-full border border-accent-200 px-3 py-1 text-xs hover:bg-accent-50 dark:border-accent-700 dark:hover:bg-white/5">Fare…</button>}
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Reservations</h1>
-          <p className="text-sm text-muted">Dispatch, complete, no-show or cancel rides.</p>
+          <p className="text-sm text-muted">{canUpdate ? 'Dispatch, complete, no-show or cancel rides.' : 'Read-only view of reservations.'}</p>
         </div>
       </div>
 
@@ -127,18 +135,22 @@ export default function ReservationsPage() {
                   <td className="max-w-[260px] truncate px-4 py-3 text-muted">{r.pickup?.address} → {r.dropoff?.address}</td>
                   <td className="px-4 py-3 font-medium">${(r.fare?.final ?? r.fare?.estimated ?? 0).toFixed(2)}</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <select
-                        value={r.driver?._id || r.driver || ''}
-                        onChange={(e) => dispatch(r, e.target.value)}
-                        className="input-pill max-w-[150px] border border-accent-200 bg-white px-2 py-1 text-xs dark:border-accent-700 dark:bg-accent-800 dark:text-white"
-                        disabled={!['pending','accepted'].includes(r.status)}
-                      >
-                        <option value="">{r.driver ? 'Change…' : 'Assign…'}</option>
-                        {drivers.map((d: any) => <option key={d._id} value={d._id}>{d.name}</option>)}
-                      </select>
-                      {r.driver && <button onClick={() => dispatch(r, '')} className="rounded-full border border-accent-200 px-2 py-1 text-xs hover:bg-accent-50 dark:border-accent-700 dark:hover:bg-white/5" title="Remove driver">✕</button>}
-                    </div>
+                    {canDispatch ? (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={r.driver?._id || r.driver || ''}
+                          onChange={(e) => dispatch(r, e.target.value)}
+                          className="input-pill max-w-[150px] border border-accent-200 bg-white px-2 py-1 text-xs dark:border-accent-700 dark:bg-accent-800 dark:text-white"
+                          disabled={!['pending','accepted'].includes(r.status)}
+                        >
+                          <option value="">{r.driver ? 'Change…' : 'Assign…'}</option>
+                          {drivers.map((d: any) => <option key={d._id} value={d._id}>{d.name}</option>)}
+                        </select>
+                        {r.driver && <button onClick={() => dispatch(r, '')} className="rounded-full border border-accent-200 px-2 py-1 text-xs hover:bg-accent-50 dark:border-accent-700 dark:hover:bg-white/5" title="Remove driver">✕</button>}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted">{r.driver?.name || 'Unassigned'}</span>
+                    )}
                     {r.driver && <div className="mt-1 text-xs text-muted">Assigned: {r.driver?.name}</div>}
                   </td>
                   <td className="px-4 py-3 text-xs text-muted">{r.createdAt ? new Date(r.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}</td>
@@ -171,15 +183,17 @@ export default function ReservationsPage() {
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-accent-100 pt-2 text-xs text-muted dark:border-accent-800">
               <span className="font-semibold text-ink dark:text-white">${(r.fare?.final ?? r.fare?.estimated ?? 0).toFixed(2)}</span>
               <span>{r.driver?.name ? `Driver: ${r.driver.name}` : 'Unassigned'}</span>
-              <select
-                value={r.driver?._id || r.driver || ''}
-                onChange={(e) => dispatch(r, e.target.value)}
-                className="input-pill max-w-[130px] border border-accent-200 bg-white px-2 py-1 text-xs dark:border-accent-700 dark:bg-accent-800 dark:text-white"
-                disabled={!['pending','accepted'].includes(r.status)}
-              >
-                <option value="">Assign…</option>
-                {drivers.map((d: any) => <option key={d._id} value={d._id}>{d.name}</option>)}
-              </select>
+              {canDispatch && (
+                <select
+                  value={r.driver?._id || r.driver || ''}
+                  onChange={(e) => dispatch(r, e.target.value)}
+                  className="input-pill max-w-[130px] border border-accent-200 bg-white px-2 py-1 text-xs dark:border-accent-700 dark:bg-accent-800 dark:text-white"
+                  disabled={!['pending','accepted'].includes(r.status)}
+                >
+                  <option value="">Assign…</option>
+                  {drivers.map((d: any) => <option key={d._id} value={d._id}>{d.name}</option>)}
+                </select>
+              )}
             </div>
             <Actions r={r} />
           </Card>

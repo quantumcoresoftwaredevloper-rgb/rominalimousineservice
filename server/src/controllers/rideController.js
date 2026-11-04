@@ -10,30 +10,32 @@ export const createRide = asyncHandler(async (req, res) => {
   const ride = await rideService.createRide(req.user._id, req.body);
   const io = ioOf(req);
 
-  // Notify nearby, available drivers registered for THIS vehicle — progressive radius.
-  // Vehicle-matched only: an SUV request never reaches a Chevrolet driver and vice-versa.
-  const nearby = await rideService.findNearbyDrivers({
-    lat: ride.pickup.lat,
-    lng: ride.pickup.lng,
-    radius: rideService.NOTIFY_RADIUS_M,
-    vehicleType: ride.vehicleType,
-  });
-  for (const driver of nearby) {
-    io.to(`user:${driver._id}`).emit('ride:new', { ride });
+  // Scheduled reservations are not offered to drivers until their pickup
+  // window; immediate bookings go straight to matching nearby drivers.
+  if (ride.status === 'pending') {
+    const nearby = await rideService.findNearbyDrivers({
+      lat: ride.pickup.lat,
+      lng: ride.pickup.lng,
+      radius: rideService.NOTIFY_RADIUS_M,
+      vehicleType: ride.vehicleType,
+    });
+    for (const driver of nearby) {
+      io.to(`user:${driver._id}`).emit('ride:new', { ride });
+    }
   }
 
-  // Live dispatch: admins see the new reservation on their rides board.
+  // Live dispatch: admins see scheduled and immediate reservations.
   io.to('admins').emit('ride:new', { ride });
 
-  // Notify every admin so dispatch can assign a driver if no one accepts.
+  const when = ride.scheduledAt
+    ? ` for ${ride.scheduledAt.toISOString()}`
+    : '';
   const admins = await rideService.findAdmins();
-  // Serial awaits stacked 2 DB round trips plus channel setup per admin, so
-  // ride creation blocked on N*3 sequential operations before responding.
   await Promise.all(admins.map((admin) => notify({
     user: admin._id,
     type: 'ride',
-    title: 'New reservation',
-    message: `${ride.passenger.name} booked a ride to ${ride.dropoff.address}.`,
+    title: ride.status === 'scheduled' ? 'New scheduled reservation' : 'New reservation',
+    message: `${ride.passenger.name} booked a ride to ${ride.dropoff.address}${when}.`,
     data: { rideId: ride._id },
     io,
   })));

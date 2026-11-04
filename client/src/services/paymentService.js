@@ -10,4 +10,6 @@ export const requestRefund = (id, reason) => api.post(`/payments/${id}/request-r
 export const listRefundRequests = () => api.get('/payments/requests');
 export const decideRefund = (requestId, approve, note) => api.post(`/payments/requests/${requestId}/decision`, { approve, note });
 
-export default { payRide, createPaymentIntent, listPayments, getPayment, refundPayment };
+export const collectCashForRide = (rideId) => api.post(`/rides/${rideId}/collect-cash`);
+
+export default { payRide, createPaymentIntent, listPayments, getPayment, refundPayment, collectCashForRide };

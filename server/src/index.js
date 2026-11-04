@@ -21,10 +21,34 @@ import paymentRoutes from "./routes/payments.js";
 import notificationRoutes from "./routes/notifications.js";
 import settingsRoutes from "./routes/settings.js";
 import contentRoutes from "./routes/content.js";
+import flightRoutes from "./routes/flights.js";
 import contactRoutes from "./routes/contact.js";
 import { initRedis } from "./config/redis.js";
+import { stripeWebhook } from "./controllers/webhookController.js";
+import { startScheduledRidePromoter, stopScheduledRidePromoter } from "./services/scheduledRideService.js";
 
 dotenv.config();
+
+// Fail fast rather than booting a server that cannot authenticate or persist.
+// Access-token signing uses JWT_ACCESS_SECRET; MONGO_URI is the only required
+// store. In production, placeholder secrets must never be accepted.
+const requiredEnv = ['MONGO_URI', 'JWT_ACCESS_SECRET'];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length) {
+  throw new Error(`Missing required environment variable(s): ${missingEnv.join(', ')}`);
+}
+if (
+  process.env.NODE_ENV === 'production' &&
+  String(process.env.JWT_ACCESS_SECRET).startsWith('change-me')
+) {
+  throw new Error('JWT_ACCESS_SECRET must be replaced before running in production');
+}
+if (process.env.NODE_ENV === 'production' && !process.env.STRIPE_SECRET_KEY) {
+  console.warn('STRIPE_SECRET_KEY is unset — card payments will fail closed (cash still works).');
+}
+if (process.env.NODE_ENV === 'production' && !process.env.STRIPE_WEBHOOK_SECRET) {
+  console.warn('STRIPE_WEBHOOK_SECRET is unset — Stripe webhook reconciliation is disabled.');
+}
 
 const app = express();
 
@@ -60,6 +84,9 @@ app.use(
     credentials: true,
   }),
 );
+// Stripe signs the exact request bytes, so this route must receive a raw body
+// before the JSON parser consumes it.
+app.post("/api/webhooks/stripe", express.raw({ type: "application/json" }), stripeWebhook);
 app.use(express.json({ limit: "1mb" }));
 // Parses the Cookie header for the OAuth CSRF state. Hand-rolled rather than
 // cookie-parser — two cookies, and the attributes matter more than the parsing.
@@ -160,6 +187,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/content", contentRoutes);
+app.use("/api/flights", flightRoutes);
 app.use("/api/contact", contactRoutes);
 
 app.use(notFound);
@@ -179,5 +207,15 @@ connectDB().then(async () => {
   await initRedis().catch(() => {});
   server.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    startScheduledRidePromoter(io);
   });
 });
+
+const shutdown = (signal) => {
+  console.log(`${signal} received, shutting down`);
+  stopScheduledRidePromoter();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10_000).unref();
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

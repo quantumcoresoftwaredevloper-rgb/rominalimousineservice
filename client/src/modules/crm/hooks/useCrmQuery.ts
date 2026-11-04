@@ -37,3 +37,8 @@ export const useDispatchMutate = () => {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['crm','rides'] }); qc.invalidateQueries({ queryKey: ['crm','analytics'] }); },
   });
 };
+
+export const useCrmDrivers = () => useQuery({
+  queryKey: ['crm','drivers'],
+  queryFn: async () => (await api.get('/crm/drivers')).data,
+});

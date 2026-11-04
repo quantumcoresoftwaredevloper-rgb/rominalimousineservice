@@ -1,8 +1,9 @@
 import Ride from '../models/Ride.js';
+import Payment from '../models/Payment.js';
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
-const ALLOWED_STATUSES = ['pending', 'accepted', 'arriving', 'in_progress', 'completed', 'cancelled', 'no_show'];
+const ALLOWED_STATUSES = ['pending', 'scheduled', 'accepted', 'arriving', 'in_progress', 'completed', 'cancelled', 'no_show'];
 
 // Admin/dispatch ride control: cancel, complete, re-open to the board, or
 // adjust the final fare. Emissions/logs are handled by the controller.
@@ -14,7 +15,17 @@ export const adminUpdateRide = async (rideId, body = {}) => {
   if (body.fareFinal !== undefined) {
     const n = Number(body.fareFinal);
     if (!Number.isFinite(n) || n < 0) throw fail('Invalid final fare', 400);
-    ride.fare.final = Math.round(n * 100) / 100;
+    const next = Math.round(n * 100) / 100;
+    // Once any money is due or collected the fare is frozen: changing it here
+    // would silently disagree with the Payment row and the passenger's receipt.
+    const settled = await Payment.findOne({
+      ride: ride._id,
+      status: { $in: ['succeeded', 'cash_due', 'cash_collected', 'cash', 'refunded'] },
+    }).select('status amount');
+    if (settled && Math.abs(settled.amount - next) > 0.001) {
+      throw fail('The fare is already settled. Issue a refund/adjustment instead of editing the fare.', 409);
+    }
+    ride.fare.final = next;
   }
 
   if (body.status !== undefined) {

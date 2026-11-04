@@ -36,5 +36,6 @@ router.get('/:id/messages', ride.getMessages);
 router.post('/:id/messages', ride.postMessage);
 router.post('/:rideId/pay', requireRole('passenger'), payment.payRide);
 router.post('/:rideId/payment-intent', requireRole('passenger'), payment.createIntent);
+router.post('/:rideId/collect-cash', requireRole('driver'), requireApprovedDriver, payment.collectCashForRide);
 
 export default router;

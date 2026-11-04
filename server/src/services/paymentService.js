@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import Payment from '../models/Payment.js';
 import Ride from '../models/Ride.js';
 import { getSettings } from './settingsService.js';
+import { assertCardProcessor, isProduction } from '../utils/paymentPolicy.js';
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
@@ -14,6 +15,8 @@ const txId = (prefix) =>
 // back to the sandbox simulator so every flow stays testable without keys.
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const stripeEnabled = !!stripe;
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
+export const isStripeConfigured = () => stripeEnabled;
 
 const cents = (amount) => Math.round(amount * 100);
 
@@ -49,7 +52,7 @@ const assertPayable = async (userId, rideId) => {
 const settledPayment = async (rideId) => {
   const existing = await Payment.findOne({
     ride: rideId,
-    status: { $in: ['succeeded', 'cash'] },
+    status: { $in: ['succeeded', 'cash', 'cash_due', 'cash_collected'] },
   });
   if (existing) return existing;
   return null;
@@ -112,14 +115,15 @@ export const createPaymentIntent = async (userId, rideId) => {
 export const processPayment = async (userId, rideId, opts = {}) => {
   const { method = 'card', idempotencyKey, cardLast4, paymentIntentId } = opts;
 
-  // Cash — no online charge; recorded so the driver collects at the end.
+  // Cash — no online charge. The ride stays cash_due until the assigned
+  // driver records collection at trip end; it is never marked paid up front.
   if (method === 'cash') {
     const ride = await Ride.findOne({
       _id: rideId,
       passenger: userId,
-      status: { $nin: ['cancelled'] },
+      status: 'completed',
     });
-    if (!ride) throw fail('Ride not found or not yours to pay for', 404);
+    if (!ride) throw fail('Ride not found, not yours, or not completed yet', 404);
 
     const existing = await settledPayment(rideId);
     if (existing) return existing;
@@ -133,16 +137,18 @@ export const processPayment = async (userId, rideId, opts = {}) => {
       amount,
       method: 'cash',
       provider: 'cash',
-      status: 'cash',
+      status: 'cash_due',
+      cashDueAt: new Date(),
       idempotencyKey: idempotencyKey || `ride:${rideId}:cash`,
     }));
 
-    ride.payment = { method: 'cash', status: 'paid' };
+    ride.payment = { method: 'cash', status: 'cash_due' };
     await ride.save();
     return payment;
   }
 
-  if (stripeEnabled) {
+  const processor = assertCardProcessor(process.env, stripeEnabled);
+  if (processor === 'stripe') {
     if (!paymentIntentId) {
       throw fail('Card payments go through Stripe. Please try again with a fresh payment.', 400);
     }
@@ -150,7 +156,7 @@ export const processPayment = async (userId, rideId, opts = {}) => {
   }
 
   return processSandboxPayment(userId, rideId, { idempotencyKey, cardLast4 });
-};
+}
 
 // Card via Stripe — verify the already-confirmed PaymentIntent, then record it.
 const processStripePayment = async (userId, rideId, { paymentIntentId, idempotencyKey }) => {
@@ -226,6 +232,7 @@ const chargeCard = async (amount, { cardLast4 }) => {
 };
 
 const processSandboxPayment = async (userId, rideId, { idempotencyKey, cardLast4 }) => {
+  assertCardProcessor(process.env, false);
   const ride = await assertPayable(userId, rideId);
 
   const existing = await settledPayment(rideId);
@@ -274,22 +281,52 @@ const processSandboxPayment = async (userId, rideId, { idempotencyKey, cardLast4
   return payment;
 };
 
-// Refund a settled payment — ADMIN ONLY (passenger must request via RefundRequest)
+// Refund a settled payment — ADMIN/FINANCE ONLY (passenger must request via
+// RefundRequest). The status transition is claimed atomically before the
+// provider call so two finance users cannot refund the same payment twice.
 export const refundPayment = async (userId, paymentId, admin = false) => {
-  if (!admin) throw fail('Only admin can issue refunds. Please request a refund via support.', 403);
-  const query = { _id: paymentId, status: { $in: ['succeeded'] } };
-  // admin flag already checked, no user filter needed for admin
-  const payment = await Payment.findOne(query);
-  if (!payment) throw fail('No successful payment found to refund', 404);
+  if (!admin) throw fail('Only staff can issue refunds. Please request a refund via support.', 403);
 
-  if (stripeEnabled && payment.provider === 'stripe') {
-    await stripe.refunds.create({ payment_intent: payment.transactionId });
+  const payment = await Payment.findOneAndUpdate(
+    { _id: paymentId, status: 'succeeded' },
+    { $set: { status: 'refunding' } },
+    { new: true },
+  );
+  if (!payment) {
+    const existing = await Payment.findById(paymentId).select('status');
+    if (existing?.status === 'refunded') throw fail('Payment has already been refunded', 409);
+    if (existing?.status === 'refunding') throw fail('Refund is already being processed', 409);
+    throw fail('No successful payment found to refund', 404);
   }
-  // Sandbox refund is instant and always succeeds.
+
+  const revert = async () => {
+    await Payment.updateOne({ _id: payment._id, status: 'refunding' }, { $set: { status: 'succeeded' } });
+  };
+
+  let refundTransactionId;
+  try {
+    if (payment.provider === 'stripe') {
+      if (!stripeEnabled) {
+        throw fail('Stripe is not configured; the refund cannot be sent to the provider.', 503);
+      }
+      const refund = await stripe.refunds.create({ payment_intent: payment.transactionId });
+      refundTransactionId = refund.id;
+    } else if (payment.provider === 'sandbox') {
+      if (isProduction(process.env)) {
+        throw fail('Sandbox payments cannot be refunded in production.', 503);
+      }
+      refundTransactionId = txId('refund');
+    } else {
+      throw fail('Cash payments are collected by the driver and cannot be refunded online.', 400);
+    }
+  } catch (err) {
+    await revert();
+    throw err;
+  }
 
   payment.status = 'refunded';
   payment.refundedAt = new Date();
-  payment.refundTransactionId = txId('refund');
+  payment.refundTransactionId = refundTransactionId;
   await payment.save();
 
   const ride = await Ride.findById(payment.ride);
@@ -299,6 +336,38 @@ export const refundPayment = async (userId, paymentId, admin = false) => {
   }
 
   return payment;
+};
+
+// Record cash handed to the assigned driver. Idempotent.
+export const collectCash = async (paymentId, driverId) => {
+  const payment = await Payment.findOne({ _id: paymentId, provider: 'cash', status: 'cash_due' });
+  if (!payment) {
+    const existing = await Payment.findById(paymentId).select('status provider');
+    if (existing?.status === 'cash_collected' || existing?.status === 'cash') {
+      return Payment.findById(paymentId);
+    }
+    throw fail('Cash-due payment not found', 404);
+  }
+
+  const ride = await Ride.findOne({ _id: payment.ride, driver: driverId, status: 'completed' });
+  if (!ride) throw fail('Only the assigned driver can record cash for this completed ride', 403);
+
+  const collected = await Payment.findOneAndUpdate(
+    { _id: payment._id, status: 'cash_due' },
+    {
+      $set: {
+        status: 'cash_collected',
+        cashCollectedAt: new Date(),
+        cashCollectedBy: driverId,
+      },
+    },
+    { new: true },
+  );
+  if (!collected) throw fail('Cash collection was already recorded', 409);
+
+  ride.payment.status = 'cash_collected';
+  await ride.save();
+  return collected;
 };
 
 export const getPayment = async (userId, paymentId, admin = false) => {
@@ -362,4 +431,106 @@ export const decideRefund = async (requestId, adminId, approve, note = '') => {
     await reqDoc.save();
     return { request: reqDoc };
   }
+};
+// --- Stripe webhook reconciliation -----------------------------------------
+// Webhooks are the source of truth when a payment is confirmed outside the
+// browser (3DS redirect, delayed method, mobile app killed). Signature
+// verification is mandatory; without a configured secret the endpoint fails
+// closed rather than trusting an unsigned body.
+export const constructStripeEvent = (rawBody, signature) => {
+  if (!stripeEnabled || !stripeWebhookSecret) {
+    throw fail('Stripe webhooks are not configured.', 503);
+  }
+  try {
+    return stripe.webhooks.constructEvent(rawBody, signature, stripeWebhookSecret);
+  } catch {
+    throw fail('Invalid Stripe webhook signature.', 400);
+  }
+};
+
+const syncIntentSettlement = async (intent) => {
+  const rideId = intent?.metadata?.rideId;
+  const userId = intent?.metadata?.userId;
+  if (!rideId || !userId) return { ignored: true, reason: 'missing metadata' };
+
+  const ride = await Ride.findOne({ _id: rideId, passenger: userId, status: 'completed' });
+  if (!ride) return { ignored: true, reason: 'ride not payable' };
+
+  const existing = await settledPayment(rideId);
+  if (existing) return { payment: existing, duplicate: true };
+
+  const amount = rideAmount(ride);
+  if (!amount || intent.amount !== cents(amount)) {
+    throw fail('Webhook amount does not match the ride fare.', 400);
+  }
+
+  let last4 = '';
+  try {
+    if (intent.payment_method) {
+      const pm = await stripe.paymentMethods.retrieve(intent.payment_method);
+      last4 = pm?.card?.last4 || '';
+    }
+  } catch {
+    // Cosmetic only.
+  }
+
+  const payment = await recordSettlement(rideId, userId, () => ({
+    user: userId,
+    ride: rideId,
+    amount,
+    method: 'card',
+    provider: 'stripe',
+    status: 'succeeded',
+    transactionId: intent.id,
+    cardLast4: last4,
+    idempotencyKey: `pi:${intent.id}`,
+  }));
+
+  ride.payment = { method: 'card', status: 'paid', transactionId: intent.id };
+  await ride.save();
+  return { payment };
+};
+
+const syncRefund = async (charge) => {
+  const intentId = typeof charge?.payment_intent === 'string'
+    ? charge.payment_intent
+    : charge?.payment_intent?.id;
+  if (!intentId || !charge?.refunded) return { ignored: true };
+  const payment = await Payment.findOne({ transactionId: intentId, provider: 'stripe' });
+  if (!payment || payment.status === 'refunded') return { ignored: true };
+  payment.status = 'refunded';
+  payment.refundedAt = new Date();
+  payment.refundTransactionId = charge.refunds?.data?.[0]?.id || '';
+  await payment.save();
+  await Ride.updateOne({ _id: payment.ride }, { $set: { 'payment.status': 'refunded' } });
+  return { payment };
+};
+
+export const handleStripeEvent = async (event) => {
+  switch (event.type) {
+    case 'payment_intent.succeeded':
+      return syncIntentSettlement(event.data.object);
+    case 'charge.refunded':
+      return syncRefund(event.data.object);
+    case 'payment_intent.payment_failed':
+      // Failed attempts are surfaced to the client. They are deliberately not
+      // persisted with the PaymentIntent id: the same intent can be retried and
+      // later succeed, and transactionId is unique.
+      return { ignored: true, reason: 'failed attempt' };
+    default:
+      return { ignored: true, reason: `unhandled ${event.type}` };
+  }
+};
+
+export const collectCashForRide = async (rideId, driverId) => {
+  const payment = await Payment.findOne({ ride: rideId, status: 'cash_due' }).select('_id');
+  if (!payment) {
+    const ride = await Ride.findOne({ _id: rideId, driver: driverId }).select('payment');
+    if (ride?.payment?.status === 'cash_collected') {
+      const existing = await Payment.findOne({ ride: rideId, status: 'cash_collected' });
+      if (existing) return existing;
+    }
+    throw fail('No cash-due payment found for this ride', 404);
+  }
+  return collectCash(payment._id, driverId);
 };

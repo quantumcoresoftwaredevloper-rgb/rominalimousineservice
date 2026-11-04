@@ -1,4 +1,5 @@
 import passport from '../config/passport.js';
+import { hasPermission, hasRole } from '../utils/roles.js';
 
 // Protects routes via the Passport JWT strategy (stateless Bearer token).
 // Same 401 shape as before: { code: 'TOKEN_EXPIRED' } lets the client refresh.
@@ -21,16 +22,20 @@ export const protect = (req, res, next) =>
   })(req, res, next);
 
 export const requireRole = (...roles) => (req, res, next) => {
-  // Support expanded CRM roles; legacy 'admin' is super_admin equivalent
-  const role = req.user?.role;
-  const effective = role === 'admin' ? ['admin', 'super_admin'] : [role];
-  const allowed = roles.flatMap((r) => (r === 'admin' ? ['admin', 'super_admin'] : [r]));
-  if (!allowed.some((r) => effective.includes(r) || roles.includes(role))) {
-    if (!roles.includes(role) && !allowed.includes(role)) {
-      return res.status(403).json({ message: 'Insufficient permissions' });
-    }
+  if (!hasRole(req.user?.role, roles)) {
+    return res.status(403).json({ message: 'Insufficient permissions' });
   }
-  next();
+  return next();
+};
+
+// Permission-based guard for privileged CRM/admin routes. Using a named
+// permission (not a role list) keeps each endpoint's authority explicit and
+// testable; `admin`/`super_admin` hold every permission.
+export const requirePermission = (permission) => (req, res, next) => {
+  if (!hasPermission(req.user?.role, permission)) {
+    return res.status(403).json({ message: 'Insufficient permissions' });
+  }
+  return next();
 };
 
 
