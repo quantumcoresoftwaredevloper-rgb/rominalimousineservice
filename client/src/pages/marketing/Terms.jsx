@@ -1,7 +1,7 @@
 import PageHero from '../../components/marketing/PageHero.jsx';
-import { PHONE_TEL, PHONE_DISPLAY, EMAIL } from '../../data/site.js';
+import { BRAND_LEGAL_NAME, BRAND_ADDRESS, PHONE_DISPLAY, EMAIL } from '../../data/site.js';
 
-const UPDATED = '12 October 2026';
+const UPDATED = '4 November 2026';
 
 const SECTIONS = [
   {
@@ -82,7 +82,9 @@ const SECTIONS = [
   {
     id: 'contact',
     title: 'Contact',
-    body: [`Questions about a booking, a charge or these terms: ${EMAIL} or ${PHONE_DISPLAY}.`],
+    body: [
+      `Questions about a booking, a charge or these terms: ${BRAND_LEGAL_NAME}, ${BRAND_ADDRESS}, by email ${EMAIL} or phone ${PHONE_DISPLAY}.`,
+    ],
   },
 ];
 
@@ -96,7 +98,9 @@ export default function Terms() {
       />
 
       <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
-        <p className="text-sm text-muted">Last updated {UPDATED}.</p>
+        <p className="text-sm text-muted">
+          Last updated {UPDATED}. These terms are between you and {BRAND_LEGAL_NAME}, {BRAND_ADDRESS}.
+        </p>
 
         <nav aria-label="On this page" className="mt-8 rounded-2xl border border-brand-200 bg-brand-50 p-5">
           <p className="text-xs font-semibold uppercase tracking-widest text-brand-700">On this page</p>
@@ -122,28 +126,6 @@ export default function Terms() {
               </div>
             </section>
           ))}
-        </div>
-
-        <div className="mt-12 rounded-2xl border border-amber-200 bg-amber-50 p-6">
-          <h2 className="font-display text-lg font-bold text-ink">Before you go live</h2>
-          <p className="mt-2 text-sm leading-relaxed text-ink/80">
-            The cancellation windows, fees and discount percentages above are reasonable defaults,
-            not your actual policy — they are placeholders where your real commercial terms go.
-            Confirm them with whoever insures and operates the fleet, then edit this page to match.
-            Add your legal entity name and registered address at the top; Google requires both before
-            it will verify this app.
-          </p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <a href={`mailto:${EMAIL}`} className="btn-brand-gradient px-5 py-2.5 text-sm font-semibold">
-              Ask a question
-            </a>
-            <a
-              href={PHONE_TEL}
-              className="rounded-full border border-brand-300 px-5 py-2.5 text-sm font-semibold text-brand-700 hover:bg-brand-50"
-            >
-              {PHONE_DISPLAY}
-            </a>
-          </div>
         </div>
       </div>
     </>

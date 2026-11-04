@@ -2,6 +2,8 @@
 // Change values here only — components read these names never hardcoded digits.
 
 export const BRAND_NAME = 'Romina Limousine Service';
+export const BRAND_LEGAL_NAME = 'Romina Limousine Service';
+export const BRAND_ADDRESS = 'Leslie St, Silver Spring, MD 20902';
 export const BRAND_TAGLINE = 'Experience the pinnacle of private travel';
 export const BRAND_LOCATION = 'Maryland';
 export const BRAND_SERVICE_AREA = 'Maryland · Virginia · Washington DC · Baltimore';
