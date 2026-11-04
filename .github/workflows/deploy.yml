@@ -57,7 +57,6 @@ jobs:
           # VITE_* values are inlined at BUILD time — changing one needs a rebuild.
           VITE_API_URL: ''
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}
-          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
         run: npm run build
 
       - name: Guard the delete target

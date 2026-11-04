@@ -10,6 +10,7 @@ import { Reveal } from '../../components/ui/Reveal.jsx';
 import { SERVICES, FEATURED_SERVICES } from '../../data/services.js';
 import { BRAND_NAME, PHONE_TEL, PHONE_DISPLAY } from '../../data/site.js';
 import { HOMECONTENT_DEFAULTS } from '../../data/homeContent.js';
+import AdvanceBookingNotice from '../../components/rides/AdvanceBookingNotice.jsx';
 import { useSiteContent } from '../../hooks/useSiteContent.js';
 
 const STATS = [
@@ -240,7 +241,9 @@ export default function Home() {
                   </div>
                 </div>
 
-                <Link to={bookUrl} className="mt-6 block">
+                <AdvanceBookingNotice className="mt-4" />
+
+                <Link to={bookUrl} className="mt-4 block">
                   <Button size="lg" className="w-full py-3.5">
                     Get a fare estimate
                   </Button>

@@ -145,7 +145,10 @@ For the workflow's build step:
 | Secret | Value |
 |---|---|
 | `VITE_STRIPE_PUBLISHABLE_KEY` | `pk_test_…` (publishable only — never the secret key) |
-| `VITE_GOOGLE_CLIENT_ID` | the OAuth client id |
+
+Google sign-in needs no build-time client value: the server reports whether its
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` pair is configured and the login page
+enables the button from that response.
 
 ### 5. Google OAuth — console setup
 
@@ -167,10 +170,10 @@ In the Google Cloud console:
 3. Add the application home page and privacy policy URLs under **Branding**, or
    Google shows a "unverified app" screen with a warning.
 
-**The button stays inert until the build knows about it.** `VITE_GOOGLE_CLIENT_ID`
-is a build-time secret; without it `SocialLoginButtons` renders a disabled button
-and issues no request. Setting the server env alone is not enough — push a commit
-after adding the repository secret.
+**The button is enabled by the server.** Once `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` are present in `/home/deploy/api-romina/.env` and the API
+is restarted, `/api/auth/providers` reports Google as ready and the login page
+links to `/api/auth/google`. No client rebuild or repository secret is needed.
 
 ### How the handshake works
 

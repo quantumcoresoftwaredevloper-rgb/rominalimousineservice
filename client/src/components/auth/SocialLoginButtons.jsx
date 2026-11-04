@@ -1,12 +1,9 @@
-import { useState } from 'react';
-import { API_ROOT } from '../../services/api.js';
+import { useEffect, useState } from 'react';
+import api, { API_ROOT } from '../../services/api.js';
 
-// "Continue with" options via the Passport OAuth redirect flow — links to the
-// server when credentials are set, or shows a friendly notice so the UI stays
-// visible. Google only (Facebook has been retired from the frontend).
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-
-const googleReady = Boolean(GOOGLE_CLIENT_ID);
+// "Continue with" options via the Passport OAuth redirect flow. The server
+// reports which providers are configured, so adding Google credentials needs
+// no client rebuild. Google only (Facebook has been retired from the frontend).
 
 const GoogleIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -22,6 +19,22 @@ const buttonBase =
 
 export default function SocialLoginButtons() {
   const [notice, setNotice] = useState('');
+  const [googleReady, setGoogleReady] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get('/auth/providers')
+      .then(({ data }) => {
+        if (!cancelled) setGoogleReady(Boolean(data?.google));
+      })
+      .catch(() => {
+        if (!cancelled) setGoogleReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const notReady = (provider) =>
     setNotice(`${provider} sign-in isn't connected yet. It will work once the app owner adds the OAuth credentials.`);
@@ -39,7 +52,11 @@ export default function SocialLoginButtons() {
       )}
 
       <div className="mt-4 space-y-3">
-        {googleReady ? (
+        {googleReady === null ? (
+          <button type="button" disabled aria-busy="true" className={`${buttonBase} cursor-wait opacity-70`}>
+            <GoogleIcon /> Continue with Google
+          </button>
+        ) : googleReady ? (
           <a href={`${API_ROOT}/api/auth/google`} className={buttonBase}>
             <GoogleIcon /> Continue with Google
           </a>

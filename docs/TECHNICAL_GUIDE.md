@@ -60,7 +60,7 @@ cd ../server && npm install
 
 # 2. Environment
 cp server/.env.example server/.env     # edit: MONGO_URI, JWT secrets
-cp client/.env.example client/.env     # edit: VITE_GOOGLE_CLIENT_ID, VITE_FACEBOOK_APP_ID
+cp client/.env.example client/.env     # edit only if the API is on another origin
 
 # 3. Seed test data (resets users + driver positions)
 cd server && npm run seed

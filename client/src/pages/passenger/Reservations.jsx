@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Car, CarFront, Bus } from 'lucide-react';
 import { BookingMap } from '../../components/maps/BookingMap.jsx';
 import BookingForm from '../../components/rides/BookingForm.jsx';
+import AdvanceBookingNotice from '../../components/rides/AdvanceBookingNotice.jsx';
 import useGeolocation from '../../hooks/useGeolocation.js';
 import { nearbyDrivers, driverEta, reverseGeocode } from '../../services/rideService.js';
 
@@ -152,6 +153,9 @@ export default function Reservations() {
         <div className="grid lg:grid-cols-5">
           {/* Form */}
           <div className="border-slate-200 lg:col-span-2 lg:border-r">
+            <div className="px-6 pt-6">
+              <AdvanceBookingNotice />
+            </div>
             <BookingForm
               pickup={pickup}
               dropoff={dropoff}

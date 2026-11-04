@@ -122,7 +122,6 @@ hardcoded.
    |-----|-------|
    | `VITE_API_URL` | `https://<your-render-service>.onrender.com` — **no trailing slash** |
    | `VITE_STRIPE_PUBLISHABLE_KEY` | your `pk_test_…` key (from local `client/.env`) |
-   | `VITE_GOOGLE_CLIENT_ID` / `VITE_FACEBOOK_APP_ID` | *(optional)* social buttons |
 4. Deploy → you get `https://<project>.vercel.app`. Copy this URL back into Render's
    `CLIENT_ORIGIN` and redeploy the backend (or just edit the env var — Render auto-restarts).
 

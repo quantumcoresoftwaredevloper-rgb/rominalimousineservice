@@ -100,6 +100,16 @@ const providerConfigured = (provider) => {
   return Boolean(keys && keys.every((k) => process.env[k]));
 };
 
+// Public capability probe for the login UI. The redirect flow needs no
+// browser-side client id, so the button can be enabled whenever the server has
+// credentials — no client rebuild required when they are added.
+export const providers = (_req, res) => {
+  res.json({
+    google: providerConfigured('google'),
+    facebook: providerConfigured('facebook'),
+  });
+};
+
 const failTo = (res, reason) => res.redirect(`${clientUrl()}/auth/social?error=${reason}`);
 
 // Step 1: kick off the OAuth dance at the provider.

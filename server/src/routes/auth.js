@@ -14,6 +14,7 @@ import {
   verifyOtp,
   socialRedirect,
   socialCallback,
+  providers,
 } from '../controllers/authController.js';
 import { protect } from '../middleware/auth.js';
 
@@ -29,6 +30,7 @@ router.post('/otp/send', sendOtp);
 router.post('/otp/verify', verifyOtp);
 
 // Social OAuth (Passport redirect flow)
+router.get('/providers', providers);
 router.get('/google', socialRedirect('google'));
 router.get('/google/callback', socialCallback('google'));
 router.get('/facebook', socialRedirect('facebook'));

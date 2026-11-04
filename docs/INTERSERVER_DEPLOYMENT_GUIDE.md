@@ -157,7 +157,6 @@ VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
 # client/.env only matters if the API lives on a different domain:
 #   VITE_API_URL=https://api.yourdomain.com
 #   VITE_STRIPE_PUBLISHABLE_KEY=pk_live_...
-#   VITE_GOOGLE_CLIENT_ID=...
 
 # --- Install & build ---
 cd client && npm ci && npm run build          # → client/dist
