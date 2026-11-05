@@ -65,7 +65,7 @@ publishable key is a rebuild and a redeploy, never a server restart.
 - `nginx` vhost `/etc/nginx/sites-available/rominalimousineservice.com`, enabled, HTTP only (TLS not yet issued)
 - `/home/deploy/api-romina/` with `.env` (mode 600) and `logs/`
 - `/var/www/rominalimousineservice.com/` serving the built SPA
-- `romina-api` running under the root PM2 daemon on port 5002
+- `romina-api` running under the `deploy` user's PM2 daemon (`pm2-deploy.service`) on port 5002. The root PM2 daemon is separate — never start `romina-api` there or it will collide on port 5002.
 - `ridetaxi` MongoDB seeded
 - swap raised to 3 GB (added `/swapfile2`; `/dev/sda3` is a 1 GB partition and resizing it means partition surgery)
 
@@ -174,6 +174,54 @@ In the Google Cloud console:
 `GOOGLE_CLIENT_SECRET` are present in `/home/deploy/api-romina/.env` and the API
 is restarted, `/api/auth/providers` reports Google as ready and the login page
 links to `/api/auth/google`. No client rebuild or repository secret is needed.
+
+### 6. Stripe live payments
+
+Current live status is visible without exposing secrets:
+
+```bash
+curl -s https://rominalimousineservice.com/api/settings        # paymentsEnabled
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'Content-Type: application/json' --data '{}' \
+  https://rominalimousineservice.com/api/webhooks/stripe       # 503 until configured
+```
+
+Live card payments need **three** values, all matching the same Stripe mode:
+
+| Where | Variable | Value |
+|---|---|---|
+| `/home/deploy/api-romina/.env` | `STRIPE_SECRET_KEY` | `sk_live_…` |
+| `/home/deploy/api-romina/.env` | `STRIPE_WEBHOOK_SECRET` | `whsec_…` for the live endpoint |
+| `client/.env` (local, before build) | `VITE_STRIPE_PUBLISHABLE_KEY` | `pk_live_…` |
+
+The publishable key is inlined by Vite at build time, so changing it requires a
+rebuild and redeploy, not just a server restart. The secret and webhook values
+only need an API restart.
+
+Stripe Dashboard → **Developers → Webhooks** → add endpoint
+`https://rominalimousineservice.com/api/webhooks/stripe` in **live mode** with
+events `payment_intent.succeeded` and `charge.refunded`; copy that endpoint's
+signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+After changing server values:
+
+```bash
+ssh root@162.35.185.229
+nano /home/deploy/api-romina/.env       # add sk_live_… and whsec_…
+sudo -u deploy bash -lc 'pm2 restart romina-api --update-env'
+```
+
+After changing the client key:
+
+```bash
+# client/.env
+VITE_STRIPE_PUBLISHABLE_KEY=pk_live_…
+./scripts/deploy-interserver.sh
+```
+
+Then verify the built bundle contains `pk_live_…` and the webhook endpoint no
+longer returns 503. Do not use `sk_test_`/`pk_test_` with a live webhook secret
+or vice versa — Stripe rejects the mismatch.
 
 ### How the handshake works
 
@@ -412,7 +460,9 @@ lower Mongo's cache rather than Node's heap.
 |---|---|
 | Deploy workflow never starts | Runner not registered for this repo — see step 3 |
 | Workflow queued forever | Same. The existing runner is bound to the other repo |
-| `502` on `/api` | `pm2 list` → `pm2 logs romina-api` → `curl 127.0.0.1:5002/api/health` |
+| `502` on `/api` | `sudo -u deploy bash -lc 'pm2 list'` → `sudo -u deploy bash -lc 'pm2 logs romina-api'` → `curl 127.0.0.1:5002/api/health` |
+| `EADDRINUSE :5002` after deploy | `romina-api` was started in the root PM2 daemon; delete it there and start under `deploy` |
+| SSH to `162.35.185.229:22` times out | Use the InterServer serial console, then `ufw allow 22/tcp` and `systemctl restart ssh` |
 | Live tracking stutters | `/socket.io/` block missing its `Upgrade`/`Connection` headers |
 | Every deep link 404s | `try_files $uri $uri/ /index.html` missing from the vhost |
 | Site 404 after deploy | `rsync --delete` removed a file; redeploy |

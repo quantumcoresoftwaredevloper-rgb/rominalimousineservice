@@ -36,7 +36,14 @@ ssh "$HOST" 'test -d /var/www/ellicottcityairporttaxi.com && test -f /etc/nginx/
   || { echo "error: $HOST does not look like the Romina VPS — aborting"; exit 1; }
 
 echo "==> 1/4 client build (same-origin: VITE_API_URL is left empty)"
-( cd client && npm ci && VITE_API_URL='' npm run build )
+if [ -z "${VITE_STRIPE_PUBLISHABLE_KEY:-}" ] && ! grep -q '^VITE_STRIPE_PUBLISHABLE_KEY=.' client/.env 2>/dev/null; then
+  echo "warning: VITE_STRIPE_PUBLISHABLE_KEY is not set — live card payments will not work"
+fi
+if [ -n "${VITE_STRIPE_PUBLISHABLE_KEY:-}" ]; then
+  ( cd client && npm ci && VITE_API_URL='' VITE_STRIPE_PUBLISHABLE_KEY="$VITE_STRIPE_PUBLISHABLE_KEY" npm run build )
+else
+  ( cd client && npm ci && VITE_API_URL='' npm run build )
+fi
 [ -f client/dist/index.html ] || { echo "error: build produced no dist/index.html"; exit 1; }
 
 echo "==> 2/4 client -> $WEB_DEST"
@@ -52,17 +59,23 @@ rsync -az --delete \
   --exclude '.env' \
   --exclude 'logs' \
   server/ "$HOST:$API_DEST/"
-ssh "$HOST" "sudo chown -R runner:runner '$API_DEST'"
+# The app runs under PM2 as the deploy user (pm2-deploy.service), so the app
+# tree and .env must belong to deploy. A blanket chown to runner makes .env
+# unreadable and the API crash-loops with "JwtStrategy requires a secret".
+ssh "$HOST" "sudo chown -R deploy:deploy '$API_DEST'; sudo test -f '$API_DEST/.env' && sudo chmod 600 '$API_DEST/.env' || true"
 
 echo "==> 4/4 pm2 restart $PM2_NAME"
 # .env is excluded from rsync above — it lives only on the server.
 ssh "$HOST" "sudo test -f '$API_DEST/.env'" \
   || { echo "error: $API_DEST/.env is missing on the server — create it first"; exit 1; }
 
+# Run PM2 as the deploy user, never root. There is already a root PM2 daemon
+# on this box; starting a second romina-api there leaves the real one holding
+# port 5002 and the new one crash-looping on EADDRINUSE.
 # Delete-then-start rather than `pm2 restart`: restart replays the script path
 # recorded when the process was first created, and cannot recover if that file
 # has moved. Starting fresh means the recorded path always matches disk.
-ssh "$HOST" "sudo bash -c 'cd $API_DEST \
+ssh "$HOST" "sudo -u deploy bash -lc 'cd $API_DEST \
   && chmod +x scripts/start.sh \
   && mkdir -p logs \
   && npm ci --omit=dev \
@@ -79,8 +92,8 @@ for _ in $(seq 1 15); do
   fi
   sleep 2
 done
-ssh "$HOST" "pm2 list | grep $PM2_NAME"
+ssh "$HOST" "sudo -u deploy bash -lc 'pm2 list' | grep $PM2_NAME"
 
 echo
 echo "Done. Other app on this box is 'ellicott-api' — confirm it is still online."
-ssh "$HOST" "pm2 list | grep -E 'ellicott-api|romina-api'"
+ssh "$HOST" "sudo -u deploy bash -lc 'pm2 list' | grep -E 'ellicott-api|romina-api'"

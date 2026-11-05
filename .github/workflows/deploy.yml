@@ -109,7 +109,11 @@ jobs:
             --exclude '.env' \
             --exclude 'logs' \
             server/ "$APP"/
-          sudo chown -R runner:runner "$APP"
+          # The app runs under PM2 as the deploy user (pm2-deploy.service).
+          # Chowning .env to runner makes it unreadable to deploy and the API
+          # crash-loops with "JwtStrategy requires a secret".
+          sudo chown -R deploy:deploy "$APP"
+          sudo test -f "$APP/.env" && sudo chmod 600 "$APP/.env" || true
 
           # Delete-then-start, not `pm2 restart`. PM2 restart replays the script
           # path recorded when the process was first created; if that file has
@@ -118,8 +122,9 @@ jobs:
           # always matches what is on disk.
           #
           # `romina-api` is a distinct name from `ellicott-api`, so this cannot
-          # touch the other site on this box.
-          sudo bash -c 'cd '"$APP"' \
+          # touch the other site on this box. Run PM2 as deploy: the root PM2
+          # daemon is separate and starting romina-api there causes EADDRINUSE.
+          sudo -u deploy bash -lc 'cd '"$APP"' \
             && chmod +x scripts/start.sh \
             && mkdir -p logs \
             && npm ci --omit=dev \
@@ -137,5 +142,5 @@ jobs:
             sleep 2
           done
           echo "::error::romina-api never became healthy on :5002"
-          sudo pm2 logs romina-api --lines 40 --nostream || true
+          sudo -u deploy bash -lc 'pm2 logs romina-api --lines 40 --nostream' || true
           exit 1
